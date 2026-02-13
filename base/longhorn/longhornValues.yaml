@@ -1,0 +1,40 @@
+#
+# Diff: 
+#   helm repo add rancher https://charts.rancher.io
+#   helm diff upgrade -n longhorn-system --version 105.2.0+up1.8.1 --values longhorn-helmvalues.yaml longhorn rancher/longhorn;
+global:
+  tolerations:
+    - key: "node-role.kubernetes.io/control-plane"
+      operator: "Exists"
+      effect: "NoSchedule"
+defaultSettings:
+  priorityClass: system-cluster-critical
+  removeSnapshotsDuringFilesystemTrim: true
+  taintToleration: "node-role.kubernetes.io/control-plane:NoSchedule"
+  createDefaultDiskLabeledNodes: true # Makes Longhorn create disks, automatically only on nodes with label: "node.longhorn.io/create-default-disk=true". The disks are instead created by the auto-discover-disks job.
+persistence:
+  defaultClassReplicaCount: 2
+  defaultDataLocality: best-effort
+  reclaimPolicy: Retain
+  removeSnapshotsDuringFilesystemTrim: enabled
+longhornDriver:
+  priorityClass: system-cluster-critical
+longhornManager:
+  priorityClass: system-cluster-critical
+longhornUI:
+  priorityClass: system-cluster-critical
+defaultBackupStore:
+  backupTarget: ${LONGHORN_BACKUP_TARGET}
+  backupTargetCredentialSecret: longhorn-backup-default-target-credentials
+preUpgradeChecker:
+  jobEnabled: false #https://longhorn.io/docs/1.10.1/deploy/install/install-with-argocd/
+
+ingress: 
+  enabled: true
+  ingressClassName: traefik
+  host: longhorn.${CLUSTER_EXTERNAL_DOMAIN}
+  tls: true
+  tlsSecret: longhorn-ui-tls-cert
+  annotations:
+    advertise-via-dns: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: longhorn-system-longhorn-ui-auth@kubernetescrd

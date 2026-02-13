@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+  labels:
+    initial-deploy-with-kubectl: "true"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: $CERT_MGR_NAMESPACE
+  annotations:
+      argocd.argoproj.io/sync-wave: "-30"
+spec:
+  project: cluster-services
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: $CERT_MGR_NAMESPACE
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 10
+      backoff:
+        duration: 20s
+        factor: 2
+        maxDuration: 10m
+  sources:
+    - chart: cert-manager
+      repoURL: quay.io/jetstack/charts
+      targetRevision: ${CERT_MGR_HELM_VERSION}
+      helm:
+        releaseName: cert-manager
+        valueFiles:
+          - $values/talos/rendered/${OVERLAY_NAME}/cert-manager/certManagerValues.yaml
+    - repoURL: $GITEA_CLUSTER_SERVICES_REPO_URL
+      targetRevision: ${GITEA_CLUSTER_SERVICES_REPO_BRANCH}
+      ref: values

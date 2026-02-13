@@ -1,0 +1,34 @@
+apiVersion: longhorn.io/v1beta2
+kind: RecurringJob
+metadata:
+  name: "${LONGHORN_BACKUP_JOB_NAME}"
+spec:
+  cron: "${LONGHORN_BACKUP_CRON_SCHEDULE}"
+  task: "backup"
+  retain: ${LONGHORN_BACKUP_RETAIN}
+  concurrency: ${LONGHORN_BACKUP_CONCURENCY}
+  groups:
+    -  "${LONGHORN_BACKUP_GROUP_NAME}"
+---
+ apiVersion: longhorn.io/v1beta2                                                                                                                                                                                                                
+ kind: RecurringJob                                                                                                                                                                                                                             
+ metadata:                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
+   name: fstrim-all                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
+ spec:                                                                                                                                                                                                                                          
+   concurrency: 1                                                                                                                                                                                                                               
+   cron: 0 7 15 * ?                                                                                                                                                                                                                             
+   groups:                                                                                                                                                                                                                                      
+     - "default"                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
+   name: fstrim-all                                                                                                                                                                                                                                                                                                                                                                                                                                                      
+   task: filesystem-trim
+---
+apiVersion: longhorn.io/v1beta2
+kind: RecurringJob
+metadata:
+  name: delete-excessive-snapshots-daily
+spec:
+  concurrency: 1
+  cron: 0 5 * * *
+  name: delete-excessive-snapshots-daily
+  retain: 14
+  task: snapshot-delete

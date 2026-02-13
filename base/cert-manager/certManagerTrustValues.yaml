@@ -1,0 +1,17 @@
+filterExpiredCertificates:  
+  enabled: true
+
+app:
+  metrics:
+    service:
+      enabled: false
+  trust:
+    namespace: $CERT_MGR_TRUST_NAMESPACE #The namespace used as the trust source.
+    # By default, the trust namespace is the only namespace whereSecrets will be read. 
+    # This restriction is in place for security reasons - we don't want to give trust-manager 
+    # the permission to read all Secrets in all namespaces. 
+    # With additional configuration, secrets may be read from or written to other namespaces.
+tolerations:
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"

@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: longhorn-system
+  labels:
+    initial-deploy-with-kubectl: "true"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: longhorn
+  namespace: longhorn-system
+  annotations:
+      argocd.argoproj.io/sync-wave: "-40"
+spec:
+  project: cluster-services
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: longhorn-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 20s
+        factor: 2
+        maxDuration: 10m
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: privileged
+  sources:
+    - chart: longhorn
+      repoURL: https://charts.longhorn.io
+      targetRevision: ${LONGHORN_CHART_VERSION}
+      helm:
+        releaseName: longhorn
+        valueFiles:
+          - $values/talos/rendered/${OVERLAY_NAME}/longhorn/longhornValues.yaml
+    - repoURL: $GITEA_CLUSTER_SERVICES_REPO_URL
+      targetRevision: ${GITEA_CLUSTER_SERVICES_REPO_BRANCH}
+      ref: values
+    - repoURL: $GITEA_CLUSTER_SERVICES_REPO_URL
+      targetRevision: ${GITEA_CLUSTER_SERVICES_REPO_BRANCH}
+      path: talos/rendered/${OVERLAY_NAME}/longhorn
+      directory:
+        recurse: false
+        exclude: "{longhornValues.yaml,longhornArgoApp.yaml}"

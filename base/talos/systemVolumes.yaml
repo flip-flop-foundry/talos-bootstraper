@@ -1,0 +1,19 @@
+apiVersion: v1alpha1
+kind: VolumeConfig
+name: STATE
+encryption:
+  provider: luks2
+  keys:
+    - slot: 0
+      kms:
+        endpoint: ${TALOS_DISK_ENCRYPTION_KMS_URL}
+---
+apiVersion: v1alpha1
+kind: VolumeConfig
+name: EPHEMERAL
+encryption:
+  provider: luks2
+  keys:
+    - slot: 0
+      kms:
+        endpoint: ${TALOS_DISK_ENCRYPTION_KMS_URL}

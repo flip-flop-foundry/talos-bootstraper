@@ -1,0 +1,5 @@
+apiVersion: v1alpha1
+kind: TrustedRootsConfig
+name: ${CA_NAME} # Name of the config document.
+certificates: |- 
+${CA_CERT_BODY}

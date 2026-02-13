@@ -1,0 +1,31 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager-issuers
+  namespace: $CERT_MGR_NAMESPACE
+  annotations:
+          argocd.argoproj.io/sync-wave: "1" #Deploy after cert-manager
+spec:
+  project: cluster-services
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: $CERT_MGR_NAMESPACE
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 20s
+        factor: 2
+        maxDuration: 10m
+  sources:
+    - repoURL: $GITEA_CLUSTER_SERVICES_REPO_URL
+      targetRevision: ${GITEA_CLUSTER_SERVICES_REPO_BRANCH}
+      path: talos/rendered/${OVERLAY_NAME}/cert-manager
+      directory:
+        recurse: false
+        include: "{cluster-ca.yaml}"

@@ -1,0 +1,22 @@
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: cluster-services
+  labels:
+    initial-deploy-with-kubectl: "true"
+value: 999999900
+preemptionPolicy: PreemptLowerPriority
+globalDefault: false
+description: "Priority class for critical cluster services like ArgoCD, Gitea, cert-manager, CNI, etc."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: high-priority-app
+  labels:
+    initial-deploy-with-kubectl: "true"
+value: 500000
+preemptionPolicy: PreemptLowerPriority
+globalDefault: false
+description: "Priority class for high-priority applications that should preempt lower priority workloads."

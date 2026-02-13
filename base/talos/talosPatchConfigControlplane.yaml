@@ -1,0 +1,13 @@
+# Controlplane-specific patch for Talos configuration
+# Enables Talos API access from Kubernetes pods in longhorn-system and kube-system namespaces
+# Mainly used to allow the disk detection logic to access the Talos API to detect disks and make them available to Longhorn
+version: v1alpha1
+machine:
+  features:
+    kubernetesTalosAPIAccess:
+      enabled: true
+      allowedRoles:
+        - os:reader
+      allowedKubernetesNamespaces:
+        - longhorn-system
+        - kube-system

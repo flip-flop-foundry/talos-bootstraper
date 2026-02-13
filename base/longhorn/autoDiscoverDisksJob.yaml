@@ -1,0 +1,441 @@
+# Auto-discovers and configures all available disks on Longhorn nodes
+# Runs on controlplane nodes with Talos API access to discover disks using talosctl
+# Detects /var/lib/longhorn (root disk) and /var/mnt/* (uservolumes) disks
+# Tags nodes as 'controlplane' or 'workernode' based on node-role.kubernetes.io labels
+# Tags disks as 'ssd' or 'hdd' based on disk type detection via talosctl
+# Reserves 10GB on all newly discovered disks for system operations
+# Intelligently merges with existing disk configurations, preserving manual overrides
+apiVersion: talos.dev/v1alpha1
+kind: ServiceAccount
+metadata:
+    name: longhorn-auto-discover-disks-talos-secrets
+    namespace: longhorn-system
+    annotations:
+      argocd.argoproj.io/sync-wave: "-2"
+spec:
+    roles:
+        - os:reader
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: longhorn-disk-discoverer
+  namespace: longhorn-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: longhorn-disk-discoverer
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+rules:
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: longhorn-disk-discoverer
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: longhorn-disk-discoverer
+subjects:
+- kind: ServiceAccount
+  name: longhorn-disk-discoverer
+  namespace: longhorn-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: longhorn-disk-discoverer
+  namespace: longhorn-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+rules:
+- apiGroups: ["longhorn.io"]
+  resources: ["nodes"]
+  verbs: ["get", "list", "patch", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: longhorn-disk-discoverer
+  namespace: longhorn-system
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: longhorn-disk-discoverer
+subjects:
+- kind: ServiceAccount
+  name: longhorn-disk-discoverer
+  namespace: longhorn-system
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: longhorn-auto-discover-disks
+  namespace: longhorn-system
+  annotations:
+    # argocd.argoproj.io/hook: PreSync
+    # argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    # argocd.argoproj.io/sync-wave: "-1"
+    # argocd.argoproj.io/compare-result: ignore
+spec:
+  template:
+    spec:
+      serviceAccountName: longhorn-disk-discoverer
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+      - key: "node-role.kubernetes.io/control-plane"
+        operator: "Exists"
+        effect: "NoSchedule"
+      volumes:
+      - name: talos-secrets
+        secret:
+          secretName: longhorn-auto-discover-disks-talos-secrets
+      containers:
+      - name: discover-disks
+        image: alpine:3.19
+        volumeMounts:
+        - name: talos-secrets
+          mountPath: /var/run/secrets/talos.dev
+          readOnly: true
+        command:
+        - /bin/sh
+        - -c
+        - |
+          #!/bin/sh
+          set -e
+          
+          echo "========================================="
+          echo "Longhorn Auto-Discover Disks Job"
+          echo "========================================="
+          
+          # Install required tools
+          echo "Installing jq..."
+          apk add --no-cache jq wget >/dev/null 2>&1
+          
+          # Download kubectl
+          echo "Downloading kubectl v$KUBERNETES_VERSION..."
+          wget -q -O /tmp/kubectl "https://dl.k8s.io/release/v$KUBERNETES_VERSION/bin/linux/amd64/kubectl"
+          chmod +x /tmp/kubectl
+          
+          # Download talosctl
+          echo "Downloading talosctl $TALOS_VERSION..."
+          wget -q -O /tmp/talosctl "https://github.com/siderolabs/talos/releases/download/$TALOS_VERSION/talosctl-linux-amd64"
+          chmod +x /tmp/talosctl
+          
+          export PATH="/tmp:$PATH"
+          
+          echo "kubectl version: $(kubectl version --client --short 2>/dev/null || kubectl version --client)"
+          echo "talosctl version: $(talosctl version --client --short 2>/dev/null || echo 'unknown')"
+
+          
+          # Configuration
+          EXPECTED_NODES=$TALOS_NR_OF_NODES
+          CALCULATED_TIMEOUT=$((150 * TALOS_NR_OF_NODES))
+          if [ $CALCULATED_TIMEOUT -gt 400 ]; then
+            TIMEOUT_SECONDS=$CALCULATED_TIMEOUT
+          else
+            TIMEOUT_SECONDS=400
+          fi
+          POLL_INTERVAL=5
+          STORAGE_RESERVED_BYTES=10737418240  # 10GB
+          
+          echo "Expected nodes: $EXPECTED_NODES"
+          echo "Timeout: ${TIMEOUT_SECONDS}s"
+          echo "Poll interval: ${POLL_INTERVAL}s"
+          echo ""
+          
+          # Track processed and failed nodes
+          PROCESSED_NODES=""
+          FAILED_NODES=""
+          START_TIME=$(date +%s)
+          
+          # Main processing loop
+          while true; do
+            CURRENT_TIME=$(date +%s)
+            ELAPSED=$((CURRENT_TIME - START_TIME))
+            
+            if [ $ELAPSED -ge $TIMEOUT_SECONDS ]; then
+              echo ""
+              echo "========================================="
+              echo "TIMEOUT: ${TIMEOUT_SECONDS}s elapsed"
+              break
+            fi
+            
+            # Get ready Longhorn nodes
+            READY_NODES=$(kubectl get nodes.longhorn.io -n longhorn-system -o json 2>/dev/null | \
+              jq -r '.items[] | select(.status.conditions[]? | select(.type=="Ready" and .status=="True")) | .metadata.name' || echo "")
+            
+            if [ -z "$READY_NODES" ]; then
+              echo "No ready Longhorn nodes found yet. Waiting ${POLL_INTERVAL}s... (elapsed: ${ELAPSED}s)"
+              sleep $POLL_INTERVAL
+              continue
+            fi
+            
+            # Process each ready node
+            for NODE in $READY_NODES; do
+              # Skip if already processed or failed
+              case " $PROCESSED_NODES " in
+                *" $NODE "*) continue ;;
+              esac
+              case " $FAILED_NODES " in
+                *" $NODE "*) continue ;;
+              esac
+              
+              echo ""
+              echo "========================================="
+              echo "Processing node: $NODE"
+              echo "========================================="
+              
+              # Determine node role from Kubernetes labels (default to workernode)
+              NODE_ROLE="workernode"
+              if kubectl get node "$NODE" -o json 2>/dev/null | jq -e '.metadata.labels["node-role.kubernetes.io/control-plane"] != null' >/dev/null 2>&1; then
+                NODE_ROLE="controlplane"
+              fi
+              
+              echo "Node role: $NODE_ROLE"
+              
+              # Tag Longhorn node with role (preserve existing tags)
+              EXISTING_TAGS=$(kubectl get node.longhorn.io "$NODE" -n longhorn-system -o jsonpath='{.spec.tags}' 2>/dev/null || echo "[]")
+              if ! echo "$EXISTING_TAGS" | grep -q "\"$NODE_ROLE\""; then
+                echo "Adding node role tag: $NODE_ROLE"
+                NEW_TAGS=$(echo "$EXISTING_TAGS" | jq -r ". + [\"$NODE_ROLE\"] | unique")
+                kubectl patch node.longhorn.io "$NODE" -n longhorn-system --type=merge -p "{\"spec\":{\"tags\":$NEW_TAGS}}" || {
+                  echo "ERROR: Failed to tag Longhorn node"
+                  FAILED_NODES="${FAILED_NODES} ${NODE}"
+                  continue
+                }
+              fi
+              
+              # Get existing disks from Longhorn
+              echo "Reading existing Longhorn disk configuration..."
+              EXISTING_DISKS=$(kubectl get node.longhorn.io "$NODE" -n longhorn-system -o jsonpath='{.spec.disks}' 2>/dev/null || echo "{}")
+              
+              # Discover disks using talosctl
+              echo "Discovering disks via Talos API..."
+              
+              # Try to get mounts from Talos
+              TALOS_MOUNTS=""
+              echo "Attempting to connect to Talos API for node: $NODE"
+              if ! TALOS_MOUNTS=$(talosctl get mounts --nodes "$NODE" -o json 2>/dev/null); then
+                echo "WARNING: Failed to get mounts from Talos API, trying without FQDN..."
+                NODE_SHORT=$(echo "$NODE" | cut -d'.' -f1)
+                echo "Retrying with short name: $NODE_SHORT"
+                if ! TALOS_MOUNTS=$(talosctl get mounts --nodes "$NODE_SHORT" -o json 2>/dev/null); then
+                  echo "ERROR: Failed to contact Talos API for node $NODE"
+                  FAILED_NODES="${FAILED_NODES} ${NODE}"
+                  continue
+                fi
+                NODE="$NODE_SHORT"  # Use short name for subsequent talosctl calls
+              fi
+              
+              # Get disk information from Talos
+              TALOS_DISKS=$(talosctl get disks --nodes "$NODE" -o json 2>/dev/null || echo "")
+              
+              # Detect system disk type (for /var/lib/longhorn)
+              # Find which disk is mounted at /var
+              ROOT_DISK_TAG="ssd"
+              if [ -n "$TALOS_MOUNTS" ] && [ -n "$TALOS_DISKS" ]; then
+                # Find the source/device for /var mount (or closest parent)
+                VAR_SOURCE=$(echo "$TALOS_MOUNTS" | jq -r 'select(.spec.target == "/var") | .spec.source' 2>/dev/null || echo "")
+                
+                
+                if [ -n "$VAR_SOURCE" ]; then
+                  echo "Found /var mounted from: $VAR_SOURCE"
+                  # Check if this device is rotational
+                  SYSTEM_DISK_ROTATIONAL=$(echo "$TALOS_DISKS" | jq -r --arg src "$VAR_SOURCE" 'select(.spec.dev_path == $src) | .spec.rotational' 2>/dev/null | head -n1)
+                  
+                  if [ "$SYSTEM_DISK_ROTATIONAL" = "true" ]; then
+                    ROOT_DISK_TAG="hdd"
+                    echo "System disk is rotational (HDD)"
+                  else 
+                    ROOT_DISK_TAG="ssd"
+                    echo "System disk is non-rotational (SSD)"
+                  fi
+                else
+                  echo "WARNING: Could not find /var mount point, defaulting root disk to SSD"
+                fi
+              else
+                echo "WARNING: Could not query Talos disk/mount information, defaulting root disk to SSD"
+              fi
+              
+              # Build discovered disks map
+              DISCOVERED_DISKS="{}"
+              
+              # Add /var/lib/longhorn (root disk)
+              if echo "$TALOS_MOUNTS" | jq -e 'select(.spec.target == "/var")' >/dev/null 2>&1; then
+                echo "Found root disk: /var/lib/longhorn (${ROOT_DISK_TAG})"
+                # Build disk name: rootSsd or rootHdd
+                DISK_NAME="root$(echo "$ROOT_DISK_TAG" | sed 's/hdd/Hdd/;s/ssd/Ssd/')"
+                DISCOVERED_DISKS=$(echo "$DISCOVERED_DISKS" | jq \
+                  --arg name "$DISK_NAME" \
+                  --arg tag "$ROOT_DISK_TAG" \
+                  '.[$name] = {
+                    "path": "/var/lib/longhorn",
+                    "tag": $tag
+                  }')
+              fi
+              
+              # Add uservolume disks from /var/mnt/*
+              USERVOLUME_PATHS=$(echo "$TALOS_MOUNTS" | jq -r 'select(.spec.target | startswith("/var/mnt/disk")) | .spec.target' 2>/dev/null || echo "")
+              for MOUNT_PATH in $USERVOLUME_PATHS; do
+                # Extract volume name from path (e.g., /var/mnt/disk1Hdd -> disk1Hdd)
+                VOLUME_NAME=$(basename "$MOUNT_PATH")
+                
+                # Determine tag from volume name
+                DISK_TAG="ssd"
+                if echo "$VOLUME_NAME" | grep -qi "hdd"; then
+                  DISK_TAG="hdd"
+                fi
+                
+                echo "Found uservolume: $MOUNT_PATH -> $VOLUME_NAME (${DISK_TAG})"
+                DISCOVERED_DISKS=$(echo "$DISCOVERED_DISKS" | jq \
+                  --arg name "$VOLUME_NAME" \
+                  --arg path "$MOUNT_PATH" \
+                  --arg tag "$DISK_TAG" \
+                  '.[$name] = {
+                    "path": $path,
+                    "tag": $tag
+                  }')
+              done
+              
+              echo "Discovered $(echo "$DISCOVERED_DISKS" | jq 'length') disk(s)"
+              
+              # Merge discovered disks with existing configuration
+              echo "Merging disk configurations..."
+              FINAL_DISKS=$(echo "$EXISTING_DISKS" | jq -r '.')
+              
+              # Process each discovered disk
+              for DISK_NAME in $(echo "$DISCOVERED_DISKS" | jq -r 'keys[]'); do
+                DISK_PATH=$(echo "$DISCOVERED_DISKS" | jq -r --arg name "$DISK_NAME" '.[$name].path')
+                DISK_TAG=$(echo "$DISCOVERED_DISKS" | jq -r --arg name "$DISK_NAME" '.[$name].tag')
+                
+                # Check if disk exists (by name AND path)
+                EXISTING_DISK=$(echo "$EXISTING_DISKS" | jq -r --arg name "$DISK_NAME" '.[$name] // {}')
+                EXISTING_PATH=$(echo "$EXISTING_DISK" | jq -r '.path // ""')
+                
+                if [ -n "$EXISTING_PATH" ] && [ "$EXISTING_PATH" = "$DISK_PATH" ]; then
+                  # Disk exists - preserve existing config but ensure ssd/hdd tag is present
+                  echo "  Disk $DISK_NAME exists, preserving configuration"
+                  EXISTING_TAGS=$(echo "$EXISTING_DISK" | jq -r '.tags // []')
+                  
+                  # Add ssd/hdd tag if not present
+                  if ! echo "$EXISTING_TAGS" | jq -e --arg tag "$DISK_TAG" '. | index($tag)' >/dev/null 2>&1; then
+                    echo "    Adding $DISK_TAG tag to existing disk"
+                    NEW_TAGS=$(echo "$EXISTING_TAGS" | jq -r --arg tag "$DISK_TAG" '. + [$tag] | unique')
+                    FINAL_DISKS=$(echo "$FINAL_DISKS" | jq \
+                      --arg name "$DISK_NAME" \
+                      --argjson tags "$NEW_TAGS" \
+                      '.[$name].tags = $tags')
+                  fi
+                else
+                  # New disk - add with default configuration
+                  echo "  Adding new disk: $DISK_NAME at $DISK_PATH (${DISK_TAG})"
+                  FINAL_DISKS=$(echo "$FINAL_DISKS" | jq \
+                    --arg name "$DISK_NAME" \
+                    --arg path "$DISK_PATH" \
+                    --arg tag "$DISK_TAG" \
+                    --argjson reserved "$STORAGE_RESERVED_BYTES" \
+                    '.[$name] = {
+                      "allowScheduling": true,
+                      "diskType": "filesystem",
+                      "evictionRequested": false,
+                      "path": $path,
+                      "tags": [$tag],
+                      "storageReserved": $reserved
+                    }')
+                fi
+              done
+              
+              # Apply configuration
+              if [ "$FINAL_DISKS" != "{}" ] && [ "$FINAL_DISKS" != "null" ]; then
+                echo "Applying disk configuration to Longhorn node..."
+                if kubectl patch node.longhorn.io "$NODE" -n longhorn-system --type=merge -p "{\"spec\":{\"disks\":$FINAL_DISKS}}"; then
+                  echo "SUCCESS: Node $NODE configured with $(echo "$FINAL_DISKS" | jq 'length') disk(s)"
+                  PROCESSED_NODES="${PROCESSED_NODES} ${NODE}"
+                else
+                  echo "ERROR: Failed to patch Longhorn node $NODE"
+                  FAILED_NODES="${FAILED_NODES} ${NODE}"
+                fi
+              else
+                echo "WARNING: No disks to configure for node $NODE"
+                PROCESSED_NODES="${PROCESSED_NODES} ${NODE}"
+              fi
+            done
+            
+            # Check if all nodes processed
+            PROCESSED_COUNT=0
+            FAILED_COUNT=0
+            [ -n "$PROCESSED_NODES" ] && PROCESSED_COUNT=$(echo "$PROCESSED_NODES" | wc -w | tr -d ' ')
+            [ -n "$FAILED_NODES" ] && FAILED_COUNT=$(echo "$FAILED_NODES" | wc -w | tr -d ' ')
+            TOTAL_COUNT=$((PROCESSED_COUNT + FAILED_COUNT))
+            
+            echo ""
+            echo "Progress: $TOTAL_COUNT / $EXPECTED_NODES nodes (processed: $PROCESSED_COUNT, failed: $FAILED_COUNT)"
+            
+            if [ $TOTAL_COUNT -ge $EXPECTED_NODES ]; then
+              echo "All expected nodes have been processed"
+              break
+            fi
+            
+            sleep $POLL_INTERVAL
+          done
+          
+          # Final summary
+          echo ""
+          echo "========================================="
+          echo "FINAL SUMMARY"
+          echo "========================================="
+          echo "Successfully configured nodes:"
+          if [ -n "$PROCESSED_NODES" ]; then
+            for node in $PROCESSED_NODES; do
+              echo "  - $node"
+            done
+          else
+            echo "  (none)"
+          fi
+          
+          echo ""
+          echo "Failed nodes:"
+          if [ -n "$FAILED_NODES" ]; then
+            for node in $FAILED_NODES; do
+              echo "  - $node"
+            done
+          else
+            echo "  (none)"
+          fi
+          
+          # Exit with error if any failures or missing nodes
+          PROCESSED_COUNT=0
+          FAILED_COUNT=0
+          [ -n "$PROCESSED_NODES" ] && PROCESSED_COUNT=$(echo "$PROCESSED_NODES" | wc -w | tr -d ' ')
+          [ -n "$FAILED_NODES" ] && FAILED_COUNT=$(echo "$FAILED_NODES" | wc -w | tr -d ' ')
+          
+          if [ $FAILED_COUNT -gt 0 ]; then
+            echo ""
+            echo "ERROR: $FAILED_COUNT node(s) failed to configure"
+            exit 1
+          fi
+          
+          if [ $PROCESSED_COUNT -lt $EXPECTED_NODES ]; then
+            echo ""
+            echo "ERROR: Only $PROCESSED_COUNT / $EXPECTED_NODES nodes were processed (timeout)"
+            exit 1
+          fi
+          
+          echo ""
+          
+          echo "SUCCESS: All $EXPECTED_NODES nodes configured successfully"
+          exit 0
+      restartPolicy: OnFailure

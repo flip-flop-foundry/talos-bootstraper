@@ -1,0 +1,34 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: gitea-cnpg
+  namespace: ${GITEA_NAMESPACE}
+  annotations:
+      argocd.argoproj.io/sync-wave: "1"  # Deploy CNPG before Gitea
+spec:
+  project: cluster-services
+  destination:
+    namespace: ${GITEA_NAMESPACE}
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=false
+    retry:
+      limit: 10
+      backoff:
+        duration: 20s
+        factor: 2
+        maxDuration: 10m
+  sources:
+    - repoURL: ${GITEA_CLUSTER_SERVICES_REPO_URL}
+      targetRevision: ${GITEA_CLUSTER_SERVICES_REPO_BRANCH}
+      path: talos/rendered/${OVERLAY_NAME}/gitea
+      ref: values
+      directory:
+        recurse: false
+        include: "{giteaCnpgCluster.yaml}"
+

@@ -1,0 +1,15 @@
+apiVersion: v1alpha1
+kind: UserVolumeConfig
+name: hddVolume
+
+provisioning:
+  diskSelector: #To build a selector, you can use this query to see relevant info: talosctl get disks --nodes node.example.com --endpoints node.example.com --insecure -o json | jq .;
+    match: disk.dev_path == "/dev/sdb" && disk.rotational == true
+  grow: true
+  minSize: 11Gi
+encryption:
+  provider: luks2
+  keys:
+      - slot: 0
+        kms:
+          endpoint: ${TALOS_DISK_ENCRYPTION_KMS_URL}

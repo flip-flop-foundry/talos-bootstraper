@@ -1,0 +1,74 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: generate-luks-global-key-secret
+  namespace: longhorn-system
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+    description: "Generates a global LUKS encryption key for Longhorn if it does not already exist, safe to be run multiple times."
+spec:
+  template:
+    spec:
+      serviceAccountName: secret-generator
+      tolerations:
+      - key: "node-role.kubernetes.io/control-plane"
+        operator: "Exists"
+        effect: "NoSchedule"
+      containers:
+      - name: generate
+        image: bitnami/kubectl:latest
+        command:
+        - /bin/bash
+        - -c
+        - |
+          #!/bin/bash
+          
+          SECRET_NAME="longhorn-luks-global-key"
+          NAMESPACE="longhorn-system"
+          
+          # Check if secret already exists
+          if kubectl get secret "$SECRET_NAME" -n "$NAMESPACE" &>/dev/null; then
+            echo "Secret $SECRET_NAME already exists, skipping generation"
+            exit 0
+          fi
+          
+          # Generate random encryption key (32 bytes base64 encoded)
+          CRYPTO_KEY=$(openssl rand -base64 32)
+          
+          # Create the secret
+          kubectl create secret generic "$SECRET_NAME" \
+            --namespace "$NAMESPACE" \
+            --from-literal=CRYPTO_KEY_VALUE="$CRYPTO_KEY"
+          
+          echo "Generated secret $SECRET_NAME with random key"
+      restartPolicy: Never
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: secret-generator
+  namespace: longhorn-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: secret-generator
+  namespace: longhorn-system
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["create", "get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: secret-generator
+  namespace: longhorn-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: secret-generator
+subjects:
+- kind: ServiceAccount
+  name: secret-generator

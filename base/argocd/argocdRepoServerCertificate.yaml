@@ -1,0 +1,16 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: argocd-repo-server-tls
+  namespace: ${ARGOCD_NAMESPACE}
+  annotations:
+    description: "TLS certificate for ArgoCD Repo Server, so that ArgoCD Server and Repo Server can communicate securely over TLS."
+spec:
+  secretName: argocd-repo-server-tls
+  issuerRef:
+    name: ${TALOS_CLUSTER_NAME}-ca-issuer
+    kind: ClusterIssuer
+  dnsNames:
+    - argocd-repo-server
+    - argocd-repo-server.${ARGOCD_NAMESPACE}.svc
+    - argocd-repo-server.${ARGOCD_NAMESPACE}.svc.cluster.local

@@ -1,0 +1,195 @@
+###############################
+#        Backup Schedule          
+###############################
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: gitea-sql-backup
+  annotations:
+    argocd.argoproj.io/sync-wave: "50" # Deploy late, so that CNI Snapshot CRDS is available
+spec:
+  schedule: "0 0 0 * * *"  # At midnight every day
+  method: volumeSnapshot
+  backupOwnerReference: cluster
+  cluster:
+    name: gitea-sql-cluster
+---
+##############################
+#      Server Cert          
+##############################
+apiVersion: v1
+kind: Secret
+type: kubernetes.io/tls
+metadata:
+  name: gitea-sql-server-cert
+  labels:
+    cnpg.io/reload: ""
+    initialDeployment: "true"
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitea-sql-server-cert
+spec:
+  secretName: gitea-sql-server-cert
+  usages:
+    - server auth
+  dnsNames:
+    - gitea-sql-rw
+    - gitea-sql-rw.gitea
+    - gitea-sql-rw.gitea.svc
+    - gitea-sql-r
+    - gitea-sql-r.gitea
+    - gitea-sql-r.gitea.svc
+    - gitea-sql-ro
+    - gitea-sql-ro.gitea
+    - gitea-sql-ro.gitea.svc
+  issuerRef:
+    name: ${TALOS_CLUSTER_NAME}-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+  secretTemplate:
+      labels:
+        cnpg.io/reload: ""
+---
+###############################
+#   PSQL Client CA            #          
+###############################
+# CNPG is stupid about client certs and appears to require to create its own client certs
+# https://github.com/cloudnative-pg/cloudnative-pg/issues/2841
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: cnpg-selfsigned-issuer
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: cnpg-client-ca
+spec:
+  isCA: true
+  commonName: cnpg-selfsigned-issuer
+  secretName: cnpg-client-ca-key-pair
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: cnpg-selfsigned-issuer
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: cnpg-client-ca-issuer
+spec:
+  ca:
+    secretName: cnpg-client-ca-key-pair
+###############################
+#   Gitea Client cert         #          
+###############################
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitea-cnpg-client-cert
+  labels:
+    cnpg.io/reload: ""
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitea-cnpg-client-cert
+spec:
+  secretName: gitea-cnpg-client-cert
+  usages:
+    - client auth
+  #commonName: streaming_replica
+  commonName: ${GITEA_PSQL_USERNAME}
+  issuerRef:
+    name: cnpg-client-ca-issuer
+    kind: Issuer
+    group: cert-manager.io
+#########################################
+#   CNPG streaming replica cert         #          
+#########################################
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gitea-cnpg-streaming-replica-cert
+  labels:
+    cnpg.io/reload: ""
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: gitea-cnpg-streaming-replica-cert
+spec:
+  secretName: gitea-cnpg-streaming-replica-cert
+  usages:
+    - client auth
+  commonName: streaming_replica
+  issuerRef:
+    name: cnpg-client-ca-issuer
+    kind: Issuer
+    group: cert-manager.io
+
+#https://cloudnative-pg.io/documentation/current/cloudnative-pg.v1/#postgresql-cnpg-io-v1-Cluster
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+
+metadata:
+  name: gitea-sql
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"  # Deploy after certificates (wave 1)
+spec: # https://cloudnative-pg.io/documentation/current/cloudnative-pg.v1/#postgresql-cnpg-io-v1-ClusterSpec
+  instances: 2
+  imageName: ghcr.io/cloudnative-pg/postgresql:${GITEA_PSQL_VERSION}
+  storage:
+    size: ${GITEA_PSQL_SIZE}
+    storageClass: pvckey-2replica-retained-backedup-ssd-cp
+  backup:
+    volumeSnapshot:
+      className: longhorn-snapshot
+      snapshotOwnerReference: backup
+  certificates:
+    serverTLSSecret: gitea-sql-server-cert
+    serverCASecret: gitea-sql-server-cert
+    clientCASecret:  gitea-cnpg-client-cert
+    replicationTLSSecret: gitea-cnpg-streaming-replica-cert
+  affinity:
+    tolerations:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
+      effect: NoSchedule
+
+  postgresql:
+    pg_hba:
+      - hostssl app ${GITEA_PSQL_USERNAME} all md5 clientcert=verify-full
+      # Note: scram-sha-256 with mTLS not supported by Gitea 10.1.3, using md5 with mTLS instead
+      # Future: Enable when upgrading to Gitea >= 10.2.0:
+      # - hostssl app ${GITEA_PSQL_USERNAME} all scram-sha-256 clientcert=verify-full
+    
+    #Temp diagnostic logging settings
+    # parameters:
+    #   log_connections: "on"           # Log all connection attempts
+    #   log_disconnections: "on"        # Log disconnections
+    #   log_statement: "all"            # Log all statements (careful - verbose!)
+    #   log_min_messages: "info"        # Minimum message level
+    #   log_error_verbosity: "verbose"  # More detailed error messages
+  # managed:
+  #   roles:
+  #     - name: gitea-sql-user
+  #       comment: Gitea database user
+  #       connectionLimit: -1
+  #       inherit: true
+  #       ensure: present
+  #       superuser: false
+  #       login: true
+  #       passwordSecret:
+  #         name: gitea-sql-user

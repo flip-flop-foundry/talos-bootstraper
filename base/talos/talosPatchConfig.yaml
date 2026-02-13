@@ -1,0 +1,38 @@
+version: v1alpha1
+machine:
+  kubelet:
+    extraMounts:
+      - destination: /var/lib/longhorn #https://longhorn.io/docs/1.11.0/advanced-resources/os-distro-specific/talos-linux-support/#data-path-mounts
+        source: /var/lib/longhorn
+        type: bind
+        options:
+          - bind
+          - rw
+          - rshared
+    extraConfig:
+      serverTLSBootstrap: true
+  certSANs: 
+    - "$TALOS_CLUSTER_ENDPOINT"
+  nodeLabels: 
+    bgpPeer: true #Label to identify nodes that should peer BGP
+  kernel: 
+    modules:
+      - name: nvme_tcp
+      - name: vfio_pci
+  sysctls:
+    vm.nr_hugepages: "1024"
+    user.max_user_namespaces: "11255" #Enable user namespaces support, https://docs.siderolabs.com/kubernetes-guides/security/usernamespace
+  features:
+    hostDNS:
+      forwardKubeDNSToHost: false
+cluster:
+  allowSchedulingOnControlPlanes: $TALOS_ALLOW_SCHEDULING_ON_CONTROLPLANES
+  network:
+    cni:
+        name: none
+    podSubnets:
+      - "$POD_CIDR"
+    serviceSubnets:
+      - "$SERVICE_CIDR"
+  proxy:
+    disabled: true

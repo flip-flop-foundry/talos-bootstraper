@@ -1,0 +1,38 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cilium
+  namespace: kube-system
+  # labels:
+  #   initial-deploy-with-kubectl: "true"
+  annotations:
+      argocd.argoproj.io/sync-wave: "-50"
+spec:
+  project: cluster-services
+  destination:
+    namespace: kube-system
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+    retry:
+      limit: 10
+      backoff:
+        duration: 20s
+        factor: 2
+        maxDuration: 10m
+  sources:
+    - chart: cilium
+      repoURL: https://helm.cilium.io/
+      targetRevision: ${CILIUM_HELM_VERSION}
+      helm:
+        releaseName: cilium
+        valueFiles:
+          - $values/talos/rendered/${OVERLAY_NAME}/cilium/ciliumHelmValues.yaml
+    - repoURL: ${GITEA_CLUSTER_SERVICES_REPO_URL}
+      targetRevision: ${GITEA_CLUSTER_SERVICES_REPO_BRANCH}
+      path: talos/rendered/${OVERLAY_NAME}/cilium
+      ref: values

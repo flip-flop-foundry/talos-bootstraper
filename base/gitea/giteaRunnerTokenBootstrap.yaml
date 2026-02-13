@@ -1,0 +1,283 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gitea-runner-token-creator
+  namespace: ${GITEA_NAMESPACE}
+  # annotations:
+  #   argocd.argoproj.io/hook: PreSync
+  #   argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+  #   argocd.argoproj.io/sync-wave: "-2"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gitea-runner-token-creator
+  namespace: ${GITEA_NAMESPACE}
+  # annotations:
+  #   argocd.argoproj.io/hook: PreSync
+  #   argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+  #   argocd.argoproj.io/sync-wave: "-2"
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    resourceNames: ["gitea-bootstrap-admin-secret"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gitea-runner-token-creator
+  # annotations:
+  #   argocd.argoproj.io/hook: PreSync
+  #   argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+  #   argocd.argoproj.io/sync-wave: "-2"
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gitea-runner-token-creator
+  namespace: ${GITEA_NAMESPACE}
+  # annotations:
+  #   argocd.argoproj.io/hook: PreSync
+  #   argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+  #   argocd.argoproj.io/sync-wave: "-2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gitea-runner-token-creator
+subjects:
+  - kind: ServiceAccount
+    name: gitea-runner-token-creator
+    namespace: ${GITEA_NAMESPACE}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gitea-runner-token-creator
+  # annotations:
+  #   argocd.argoproj.io/hook: PreSync
+  #   argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+  #   argocd.argoproj.io/sync-wave: "-2"
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gitea-runner-token-creator
+subjects:
+  - kind: ServiceAccount
+    name: gitea-runner-token-creator
+    namespace: ${GITEA_NAMESPACE}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gitea-runner-token-creator
+  namespace: ${GITEA_NAMESPACE}
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  
+  backoffLimit: 3
+  template:
+    metadata:
+      name: gitea-runner-token-creator
+    spec:
+      serviceAccountName: gitea-runner-token-creator
+      restartPolicy: OnFailure
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: token-creator
+          image: alpine/k8s:${KUBERNETES_VERSION}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+            capabilities:
+              drop:
+                - ALL
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              
+              SECRET_NAME="runner-registration-token"
+              RUNNERS_NAMESPACE="${GITEA_NAMESPACE}-runners"
+              GITEA_NAMESPACE="${GITEA_NAMESPACE}"
+              GITEA_DOMAIN="${GITEA_DOMAIN_NAME}"
+              ADMIN_SECRET_NAME="gitea-bootstrap-admin-secret"
+              
+              echo "Checking if secret ${SECRET_NAME} exists in namespace ${RUNNERS_NAMESPACE}..."
+              
+              if kubectl get secret "${SECRET_NAME}" -n "${RUNNERS_NAMESPACE}" >/dev/null 2>&1; then
+                echo "Secret ${SECRET_NAME} already exists in ${RUNNERS_NAMESPACE}. Skipping creation."
+                exit 0
+              fi
+              
+              
+              echo "Secret does not exist. Proceeding with creation..."
+              
+              # Wait up to 10 minutes for the admin secret to appear
+              echo "Waiting for Gitea admin secret ${ADMIN_SECRET_NAME} to appear in namespace ${GITEA_NAMESPACE} (timeout: 10 minutes)..."
+              MAX_WAIT_SECONDS=600
+              WAIT_INTERVAL=10
+              WAITED=0
+              while ! kubectl get secret "${ADMIN_SECRET_NAME}" -n "${GITEA_NAMESPACE}" >/dev/null 2>&1; do
+                if [ $WAITED -ge $MAX_WAIT_SECONDS ]; then
+                  echo "ERROR: Timed out waiting for admin secret ${ADMIN_SECRET_NAME} in namespace ${GITEA_NAMESPACE} after $MAX_WAIT_SECONDS seconds."
+                  exit 1
+                fi
+                echo "Admin secret not found yet, waiting $WAIT_INTERVAL seconds... ($WAITED/$MAX_WAIT_SECONDS)"
+                sleep $WAIT_INTERVAL
+                WAITED=$((WAITED + WAIT_INTERVAL))
+              done
+              echo "Gitea admin secret ${ADMIN_SECRET_NAME} found. Fetching credentials..."
+              ADMIN_USERNAME=$(kubectl get secret "${ADMIN_SECRET_NAME}" -n "${GITEA_NAMESPACE}" -o jsonpath='{.data.username}' | base64 -d)
+              ADMIN_PASSWORD=$(kubectl get secret "${ADMIN_SECRET_NAME}" -n "${GITEA_NAMESPACE}" -o jsonpath='{.data.password}' | base64 -d)
+              
+              if [[ -z "${ADMIN_USERNAME}" || -z "${ADMIN_PASSWORD}" ]]; then
+                echo "ERROR: Failed to retrieve admin credentials from secret"
+                exit 1
+              fi
+              
+              echo "Admin username: ${ADMIN_USERNAME}"
+              
+              # Wait for Gitea to be ready
+              echo "Waiting for Gitea API to be available at https://${GITEA_DOMAIN}..."
+              MAX_RETRIES=30
+              RETRY_COUNT=0
+              
+              while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+                if curl -k -s -f "https://${GITEA_DOMAIN}/api/v1/version" >/dev/null 2>&1; then
+                  echo "Gitea API is ready"
+                  break
+                fi
+                echo "Waiting for Gitea API... (attempt $((RETRY_COUNT + 1))/${MAX_RETRIES})"
+                sleep 10
+                RETRY_COUNT=$((RETRY_COUNT + 1))
+              done
+              
+              if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+                echo "ERROR: Gitea API did not become available in time"
+                exit 1
+              fi
+              
+              # Create a temporary admin token
+              echo "Creating temporary admin token..."
+              TOKEN_NAME="temp-runner-token-creator-$(date +%s)"
+              
+              RESPONSE=$(curl -k -s -S -w "\n%{http_code}" -X POST \
+                -u "${ADMIN_USERNAME}:${ADMIN_PASSWORD}" \
+                -H "Content-Type: application/json" \
+                -d "{\"name\":\"${TOKEN_NAME}\",\"scopes\":[\"write:admin\"]}" \
+                "https://${GITEA_DOMAIN}/api/v1/users/${ADMIN_USERNAME}/tokens")
+              
+              HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+              BODY=$(echo "$RESPONSE" | sed '$d')
+              
+              if [[ "$HTTP_CODE" != "20"* ]]; then
+                echo "ERROR: Failed to create admin token. HTTP code: ${HTTP_CODE}"
+                echo "Response: ${BODY}"
+                exit 1
+              fi
+              
+              ADMIN_TOKEN=$(echo "$BODY" | grep -o '"sha1":"[^"]*"' | cut -d'"' -f4)
+              
+              if [[ -z "${ADMIN_TOKEN}" ]]; then
+                echo "ERROR: Failed to extract admin token from response"
+                echo "Response: ${BODY}"
+                exit 1
+              fi
+              
+              echo "Temporary admin token created successfully"
+              
+              # Create runner registration token
+              echo "Creating runner registration token..."
+              
+              RUNNER_RESPONSE=$(curl -k -s -S -w "\n%{http_code}" -X POST \
+                -H "Authorization: token ${ADMIN_TOKEN}" \
+                "https://${GITEA_DOMAIN}/api/v1/admin/actions/runners/registration-token")
+              
+              RUNNER_HTTP_CODE=$(echo "$RUNNER_RESPONSE" | tail -n1)
+              RUNNER_BODY=$(echo "$RUNNER_RESPONSE" | sed '$d')
+              
+              if [[ "$RUNNER_HTTP_CODE" != "20"* ]]; then
+                echo "ERROR: Failed to create runner registration token. HTTP code: ${RUNNER_HTTP_CODE}"
+                echo "Response: ${RUNNER_BODY}"
+                
+                # Cleanup: Delete temporary admin token
+                echo "Cleaning up temporary admin token..."
+                curl -k -s -X DELETE \
+                  -u "${ADMIN_USERNAME}:${ADMIN_PASSWORD}" \
+                  "https://${GITEA_DOMAIN}/api/v1/users/${ADMIN_USERNAME}/tokens/${TOKEN_NAME}" >/dev/null 2>&1
+                
+                exit 1
+              fi
+              
+              RUNNER_TOKEN=$(echo "$RUNNER_BODY" | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+              
+              if [[ -z "${RUNNER_TOKEN}" ]]; then
+                echo "ERROR: Failed to extract runner token from response"
+                echo "Response: ${RUNNER_BODY}"
+                
+                # Cleanup: Delete temporary admin token
+                echo "Cleaning up temporary admin token..."
+                curl -k -s -X DELETE \
+                  -u "${ADMIN_USERNAME}:${ADMIN_PASSWORD}" \
+                  "https://${GITEA_DOMAIN}/api/v1/users/${ADMIN_USERNAME}/tokens/${TOKEN_NAME}" >/dev/null 2>&1
+                
+                exit 1
+              fi
+              
+              echo "Runner registration token created successfully"
+              
+              # Create Kubernetes secret in runners namespace
+              echo "Creating Kubernetes secret ${SECRET_NAME} in namespace ${RUNNERS_NAMESPACE}..."
+              
+              kubectl create secret generic "${SECRET_NAME}" \
+                -n "${RUNNERS_NAMESPACE}" \
+                --from-literal=token="${RUNNER_TOKEN}"
+              
+              echo "Secret ${SECRET_NAME} created successfully in ${RUNNERS_NAMESPACE}"
+              
+              # Cleanup: Delete temporary admin token
+              echo "Cleaning up temporary admin token..."
+              DELETE_RESPONSE=$(curl -k -s -S -w "\n%{http_code}" -X DELETE \
+                -u "${ADMIN_USERNAME}:${ADMIN_PASSWORD}" \
+                "https://${GITEA_DOMAIN}/api/v1/users/${ADMIN_USERNAME}/tokens/${TOKEN_NAME}")
+              
+              DELETE_HTTP_CODE=$(echo "$DELETE_RESPONSE" | tail -n1)
+              
+              if [[ "$DELETE_HTTP_CODE" == "20"* || "$DELETE_HTTP_CODE" == "404" ]]; then
+                echo "Temporary admin token cleaned up successfully"
+              else
+                echo "WARNING: Failed to delete temporary admin token (HTTP ${DELETE_HTTP_CODE}), but secret was created"
+                curl -k -vvvv -X DELETE \
+                  -u "${ADMIN_USERNAME}:${ADMIN_PASSWORD}" \
+                  "https://${GITEA_DOMAIN}/api/v1/users/${ADMIN_USERNAME}/tokens/${TOKEN_NAME}"
+              fi
+              
+              echo "Job completed successfully!"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi

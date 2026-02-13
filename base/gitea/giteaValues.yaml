@@ -1,0 +1,315 @@
+# Default values for gitea.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+## @section Global
+#
+## @param global.imageRegistry global image registry override
+## @param global.imagePullSecrets global image pull secrets override; can be extended by `imagePullSecrets`
+## @param global.storageClass global storage class override
+## @param global.hostAliases global hostAliases which will be added to the pod's hosts files
+global:
+
+  storageClass: pvckey-2replica-retained-backedup-ssd-cp 
+
+## @section strategy
+## @param strategy.type strategy type
+## @param strategy.rollingUpdate.maxSurge maxSurge
+## @param strategy.rollingUpdate.maxUnavailable maxUnavailable
+strategy:
+  type: "Recreate"
+
+
+image:
+  tag: "${GITEA_IMAGE_TAG}"
+
+
+
+## @section Service
+service:
+  http:
+    type: ClusterIP
+    port: 3000
+    clusterIP: ""
+  ssh:
+    type: ClusterIP
+    port: 22
+    clusterIP: None
+
+
+## @section Ingress
+## @param ingress.enabled Enable ingress
+## @param ingress.className Ingress class name
+## @param ingress.annotations Ingress annotations
+## @param ingress.hosts[0].host Default Ingress host
+## @param ingress.hosts[0].paths[0].path Default Ingress path
+## @param ingress.hosts[0].paths[0].pathType Ingress path type
+## @param ingress.tls Ingress tls settings
+## @extra ingress.apiVersion Specify APIVersion of ingress object. Mostly would only be used for argocd.
+ingress:
+  enabled: true
+  className: "traefik"
+  annotations:
+    cert-manager.io/cluster-issuer: ${TALOS_CLUSTER_NAME}-ca-issuer
+    cert-manager.io/common-name: ${GITEA_DOMAIN_NAME}
+    external-dns.alpha.kubernetes.io/hostname: "${GITEA_DOMAIN_NAME}"
+    advertise-via-dns: "true"
+
+  hosts:
+    - host: ${GITEA_DOMAIN_NAME}
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - hosts: 
+        - ${GITEA_DOMAIN_NAME}
+      secretName: cert-${GITEA_DOMAIN_NAME} # Certificate secret created by cert-manager
+  #  - secretName: chart-example-tls
+  #    hosts:
+  #      - git.example.com
+  # Mostly for argocd or any other CI that uses `helm template | kubectl apply` or similar
+  # If helm doesn't correctly detect your ingress API version you can set it here.
+  apiVersion: networking.k8s.io/v1
+
+## @section deployment
+#
+## @param resources Kubernetes resources
+resources:
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  limits:
+    cpu: 2000m
+    memory: 1024Mi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+## @param priorityClassName Priority class for pod assignment
+priorityClassName: "cluster-services"
+
+## @param tolerations Tolerations for pod assignment
+tolerations:
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+## @param deployment.env  Additional environment variables to pass to containers
+## @param deployment.terminationGracePeriodSeconds How long to wait until forcefully kill the pod
+## @param deployment.labels Labels for the deployment
+## @param deployment.annotations Annotations for the Gitea deployment to be created
+deployment:
+  env: 
+    - name: PGSSLCERT
+      value: /pg-client-crt/tls.crt
+    - name: PGSSLKEY
+      value: /pg-client-crt/tls.key
+    - name: PGSSLROOTCERT
+      value: /pg-ca-crt/ca.crt
+
+
+
+## @section Persistence
+#
+## @param persistence.enabled Enable persistent storage
+## @param persistence.create Whether to create the persistentVolumeClaim for shared storage
+## @param persistence.mount Whether the persistentVolumeClaim should be mounted (even if not created)
+## @param persistence.claimName Use an existing claim to store repository information
+## @param persistence.size Size for persistence to store repo information
+## @param persistence.accessModes AccessMode for persistence
+## @param persistence.labels Labels for the persistence volume claim to be created
+## @param persistence.annotations.helm.sh/resource-policy Resource policy for the persistence volume claim
+## @param persistence.storageClass Name of the storage class to use
+## @param persistence.subPath Subdirectory of the volume to mount at
+## @param persistence.volumeName Name of persistent volume in PVC
+persistence:
+  enabled: true
+  create: true
+  mount: true
+  size: ${GITEA_SHARED_STORAGE_SIZE}
+  accessModes:
+    - ReadWriteOnce
+  labels: {}
+    #owner: gitea
+  annotations:
+    helm.sh/resource-policy: keep
+
+## @param extraVolumes Additional volumes to mount to the Gitea deployment
+extraVolumes: 
+  - name: psql-client-cert-vol
+    secret:
+      secretName: gitea-cnpg-client-cert
+      defaultMode: 384
+  - name: psql-ca-cert-vol
+    configMap:
+      name: cluster-ca-bundle
+      defaultMode: 384
+  - name: cluster-ca # Mount cluster CA bundle to trust internal cluster certs like Gitea
+    configMap:
+      name: cluster-ca-bundle
+      items:
+        - key: ca.crt
+          path: cluster-ca.crt
+
+
+
+## @param extraContainerVolumeMounts Mounts that are only mapped into the Gitea runtime/main container, to e.g. override custom templates.
+extraContainerVolumeMounts:
+  - name: psql-client-cert-vol
+    readOnly: true
+    mountPath: "/pg-client-crt"
+    #defaultMode: 110
+  - name: psql-ca-cert-vol
+    readOnly: true
+    mountPath: "/pg-ca-crt"
+    #defaultMode: 110
+  - name: cluster-ca # Mount cluster CA bundle to trust internal cluster certs like Gitea
+    mountPath: /etc/ssl/certs/cluster-ca.crt
+    subPath: cluster-ca.crt
+    readOnly: true
+  
+
+## @param extraInitVolumeMounts Mounts that are only mapped into the init-containers. Can be used for additional preconfiguration.
+extraInitVolumeMounts: 
+  - name: psql-client-cert-vol
+    readOnly: true
+    mountPath: "/pg-client-crt"
+    #defaultMode: 110
+  - name: psql-ca-cert-vol
+    readOnly: true
+    mountPath: "/pg-ca-crt"
+    #defaultMode: 110
+
+
+## @section Init
+## @param initPreScript Bash shell script copied verbatim to the start of the init-container.
+initPreScript: ""
+#
+# initPreScript: |
+#   mkdir -p /data/git/.postgresql
+#   cp /pg-ssl/* /data/git/.postgresql/
+#   chown -R git:git /data/git/.postgresql/
+#   chmod 400 /data/git/.postgresql/postgresql.key
+
+## @param initContainers.resources.limits initContainers.limits Kubernetes resource limits for init containers
+## @param initContainers.resources.requests.cpu initContainers.requests.cpu Kubernetes cpu resource limits for init containers
+## @param initContainers.resources.requests.memory initContainers.requests.memory Kubernetes memory resource limits for init containers
+initContainers:
+  resources:
+    limits: {}
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+
+## @section Gitea
+#
+gitea:
+  ## @param gitea.admin.username Username for the Gitea admin user
+  ## @param gitea.admin.existingSecret Use an existing secret to store admin user credentials
+  ## @param gitea.admin.password Password for the Gitea admin user
+  ## @param gitea.admin.email Email for the Gitea admin user
+  admin:
+     existingSecret: gitea-bootstrap-admin-secret  # Bootstrap admin credentials from secret
+    #existingSecret:
+    #username: anders
+    #password: testarlite
+    #email: "gitea@local.domain"
+
+  ## @param gitea.metrics.enabled Enable Gitea metrics
+  ## @param gitea.metrics.serviceMonitor.enabled Enable Gitea metrics service monitor
+  metrics:
+    enabled: false
+    serviceMonitor:
+      enabled: false
+      #  additionalLabels:
+      #    prometheus-release: prom1
+
+
+  ## @param gitea.config.server.SSH_PORT SSH port for rootlful Gitea image
+  ## @param gitea.config.server.SSH_LISTEN_PORT SSH port for rootless Gitea image
+  config:
+    #  APP_NAME: "Gitea: Git with a cup of tea"
+    #  RUN_MODE: dev
+    server:
+      SSH_PORT: 22 # rootful image
+      SSH_LISTEN_PORT: 2222 # rootless image
+    database:
+      DB_TYPE: postgres
+      SSL_MODE: require
+    session:
+      PROVIDER: db
+    cache:
+      ADAPTER: memory
+    queue:
+      TYPE: level
+    indexer:
+      ISSUE_INDEXER_TYPE: bleve
+      REPO_INDEXER_ENABLED: true
+
+
+  ## @param gitea.additionalConfigFromEnvs Additional configuration sources from environment variables
+  ## https://docs.gitea.com/administration/config-cheat-sheet
+  additionalConfigFromEnvs:   
+  - name: GITEA__DATABASE__PASSWD #Use environment variable to set database password
+    valueFrom:
+        secretKeyRef:
+          name: gitea-sql-app
+          key: password   
+  - name: GITEA__DATABASE__USER #Use environment variable to set database password
+    valueFrom:
+        secretKeyRef:
+          name: gitea-sql-app
+          key: user
+  - name: GITEA__DATABASE__HOST #Use environment variable to set database password
+    valueFrom:
+        secretKeyRef:
+          name: gitea-sql-app
+          key: host
+  - name: GITEA__DATABASE__NAME #Use environment variable to set database password
+    valueFrom:
+        secretKeyRef:
+          name: gitea-sql-app
+          key: dbname
+  - name: GITEA__SERVER__LFS_START_SERVER
+    value: "true"
+  - name: GITEA__MIGRATIONS__ALLOW_LOCALNETWORKS
+    value: "true"
+  - name: GITEA__ACTIONS__ARTIFACT_RETENTION_DAYS
+    value: "7"
+  - name: GITEA__WEBHOOK__ALLOWED_HOST_LIST
+    value: "${ARGOCD_DOMAIN}"
+
+
+
+## @section redis-cluster
+## @param redis-cluster.enabled Enable redis
+## @param redis-cluster.usePassword Whether to use password authentication
+## @param redis-cluster.cluster.nodes Number of redis cluster master nodes
+## @param redis-cluster.cluster.replicas Number of redis cluster master node replicas
+redis-cluster:
+  enabled: false  # Redis cluster disabled - using default in-memory session storage
+  usePassword: false
+  cluster:
+    nodes: 3 # default: 6
+    replicas: 0 # default: 1
+
+
+postgresql-ha:
+  enabled: false
+
+
+postgresql:
+  enabled: false
+
+
+
+## @param extraDeploy Array of extra objects to deploy with the release
+##
+extraDeploy:
+  # - apiVersion: v1
+  #   kind: Secret
+  #   metadata:
+  #     name: gitea-shared-storage
+  #   stringData:
+  #     CRYPTO_KEY_VALUE: ${GITEA_SHARED_STORAGE_CRYPTO_KEY}

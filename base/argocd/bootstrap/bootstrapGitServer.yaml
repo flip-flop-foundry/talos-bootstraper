@@ -1,0 +1,76 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: git-bootstrap-server
+  namespace: ${ARGOCD_NAMESPACE}
+  labels:
+    app: git-bootstrap-server
+spec:
+  # securityContext:
+  #   runAsRoot: false
+  hostUsers: false
+  tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+  containers:
+  - name: git-server
+    image: alpine/git:latest
+    lifecycle:
+      preStop:
+        exec:
+          command: ["/bin/sh", "-c", "echo 'Received SIGTERM, shutting down git daemon...'; kill $(pidof git)"]
+    ports:
+      - containerPort: 8080
+    env:
+      - name: GIT_AUTHOR_NAME
+        value: "git-bootstrap-server"
+      - name: GIT_AUTHOR_EMAIL
+        value: "git-bootstrap-server@cluster.local"
+      - name: GIT_BRANCH_NAME
+        value: "argo-cd-bootstrap"
+      - name: GIT_REMOTE_URL
+        value: "git://git-bootstrap-server:8080/git/repo.git"
+      - name: GIT_COMMIT_MSG
+        value: "Bootstrap commit from git-bootstrap-server"
+      - name: GIT_SOURCE_DIR
+        value: "/tmp/gitsrc"
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      seccompProfile:
+        type: RuntimeDefault
+    resources:
+      requests:
+        memory: "64Mi"
+        cpu: "250m"
+      limits:
+        memory: "228Mi"
+        cpu: "1500m"
+    command: 
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        apk add --no-cache git-daemon
+        mkdir -p /git/
+        git init --bare /git/repo.git
+        git daemon --export-all --reuseaddr --verbose --enable=receive-pack --informative-errors --port=8080 /git/repo.git
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: git-bootstrap-server
+  namespace: ${ARGOCD_NAMESPACE}
+  labels:
+    app: git-bootstrap-server
+spec:
+  selector:
+    app: git-bootstrap-server
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP

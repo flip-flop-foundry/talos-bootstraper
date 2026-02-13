@@ -1,0 +1,135 @@
+global:
+  domain: ${ARGOCD_DOMAIN}
+  image:
+    tag: ${ARGOCD_IMAGE_TAG}
+  networkPolicy:
+    create: true #Adds quite week networkpolicies, should be strengthened later
+  priorityClassName: "cluster-services"
+  tolerations:
+    - key: "node-role.kubernetes.io/control-plane"
+      operator: "Exists"
+      effect: "NoSchedule"
+  logging:
+    level: info
+
+createAggregateRoles: true
+
+configs:
+  cm:
+    #server.insecure: "true"
+    application.resourceTrackingMethod: annotation+label
+    # Custom health check for Ingress resources with Cilium
+    # Cilium doesn't populate .status.loadBalancer.ingress which Argo expects. So we check for rules instead
+    # https://github.com/argoproj/argo-cd/issues/14607
+    resource.customizations.health.networking.k8s.io_Ingress: |
+      hs = {}
+      if obj.status ~= nil then
+        if obj.status.loadBalancer ~= nil and obj.status.loadBalancer.ingress ~= nil then
+          hs.status = "Healthy"
+          hs.message = "Ingress has loadBalancer status"
+          return hs
+        end
+      end
+      -- Cilium doesn't set status, so check if it's a Cilium Ingress and has rules
+      if obj.spec.ingressClassName == "cilium" and obj.spec.rules ~= nil and #obj.spec.rules > 0  then
+        if obj.spec.rules ~= nil and #obj.spec.rules > 0 then
+          hs.status = "Healthy"
+          hs.message = "Cilium Ingress rules configured"
+          return hs
+        end
+      end
+      hs.status = "Progressing"
+      hs.message = "Waiting for Ingress to be configured"
+      return hs
+    # Override resource.exclusions to so that Endpoints and EndpointSlice arent excluded during deployment.
+    # while keeping other default exclusions for performance
+    # This is needed by cilium ingress, consider removing cilium ingress controller if not used
+    # Ideally this should be updated in case this file changes: https://github.com/argoproj/argo-cd/blob/master/manifests/base/config/argocd-cm.yaml#L64
+    # Info: https://docs.cilium.io/en/latest/configuration/argocd-issues/
+    #  Last refreshed from file: 2026-01-06
+    resource.exclusions: |
+      ### Internal Kubernetes resources excluded reduce the number of watched events
+      - apiGroups:
+        - coordination.k8s.io
+        kinds:
+        - Lease
+      ### Internal Kubernetes Authz/Authn resources excluded reduce the number of watched events
+      - apiGroups:
+        - authentication.k8s.io
+        - authorization.k8s.io
+        kinds:
+        - SelfSubjectReview
+        - TokenReview
+        - LocalSubjectAccessReview
+        - SelfSubjectAccessReview
+        - SelfSubjectRulesReview
+        - SubjectAccessReview
+      ### Intermediate Certificate Request excluded reduce the number of watched events
+      - apiGroups:
+        - certificates.k8s.io
+        kinds:
+        - CertificateSigningRequest
+      - apiGroups:
+        - cert-manager.io
+        kinds:
+        - CertificateRequest
+      ### Cilium internal resources excluded reduce the number of watched events and UI Clutter
+      - apiGroups:
+        - cilium.io
+        kinds:
+        - CiliumIdentity
+        - CiliumEndpoint
+        - CiliumEndpointSlice
+      ### Kyverno intermediate and reporting resources excluded reduce the number of watched events and improve performance
+      - apiGroups:
+        - kyverno.io
+        - reports.kyverno.io
+        - wgpolicyk8s.io
+        kinds:
+        - PolicyReport
+        - ClusterPolicyReport
+        - EphemeralReport
+        - ClusterEphemeralReport
+        - AdmissionReport
+        - ClusterAdmissionReport
+        - BackgroundScanReport
+        - ClusterBackgroundScanReport
+        - UpdateRequest
+  params:
+    application.namespaces: "*" #Allow ArgoCD to see all namespaces, https://argo-cd.readthedocs.io/en/latest/operator-manual/app-any-namespace/#change-workload-startup-parameters
+server:
+  certificate:
+    enabled: true
+    issuer:
+      group: cert-manager.io
+      name: ${TALOS_CLUSTER_NAME}-ca-issuer
+      kind: ClusterIssuer
+
+  service:
+    annotations:
+      advertise-via-dns: "true"
+      external-dns.alpha.kubernetes.io/hostname: argocd.${CLUSTER_EXTERNAL_DOMAIN}
+    labels:
+      advertise-via-bgp: "true"
+    type: LoadBalancer
+    loadBalancerClass: io.cilium/bgp-control-plane
+
+dex: 
+  enabled: false # Dex (OIDC/OAuth2 provider) disabled - using external authentication
+
+repoServer:
+  deploymentAnnotations:
+    secret.reloader.stakater.com/reload: "argocd-repo-server-tls" # Make sure repo server reloads when its TLS cert changes
+  volumes:
+    - name: cluster-ca # Mount cluster CA bundle to trust internal cluster certs like Gitea
+      configMap:
+        name: cluster-ca-bundle
+        items:
+          - key: ca.crt
+            path: cluster-ca.crt
+  volumeMounts:
+    - name: cluster-ca # Mount cluster CA bundle to trust internal cluster certs like Gitea
+      mountPath: /etc/ssl/certs/cluster-ca.crt
+      subPath: cluster-ca.crt
+      readOnly: true
+    

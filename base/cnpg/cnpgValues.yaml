@@ -1,0 +1,12 @@
+crds:
+  create: true
+config:
+  secret: true
+  clusterWide: true
+  data:
+    CLUSTERS_ROLLOUT_DELAY: "60" # Delay between cluster rollouts in seconds, during upgrades and the like
+
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule

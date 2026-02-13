@@ -1,0 +1,26 @@
+#https://github.com/stakater/Reloader/blob/master/deployments/kubernetes/chart/reloader/README.md
+
+## To use, add the label `reloader-enabled=true` to the namespace(s) you want to watch.
+## Add these labels to deployment/statefulset/daemonset/pod resources you want to be reloaded on configmap/secret changes:
+##  reloader.stakater.com/auto: "true" # Reloads workload when any referenced ConfigMap or Secret changes
+##  secret.reloader.stakater.com/auto: "true" # Reloads workload when any referenced Secret changes
+##  configmap.reloader.stakater.com/auto: "true" # Reloads workload when any referenced ConfigMap changes
+##
+## Or narrow it down to specific configmaps/secrets by using:
+## secret.reloader.stakater.com/reload: "my-secret,my-other-secret"
+## configmap.reloader.stakater.com/reload: "my-configmap,my-other-configmap"
+
+reloader:
+  # Only watch namespaces with this label
+  # Namespaces without this label will be ignored
+  namespaceSelector: "reloader-enabled=true"
+  
+  # Only watch secrets/configmaps with this label
+  # Resources without this label will be ignored even if namespace is watched
+  #resourceLabelSelector: "reloader-enabled=true"
+
+  
+  reloadOnCreate: true
+  reloadOnDelete: true
+
+  logLevel: debug # Log level to use (trace, debug, info, warning, error, fatal and panic)

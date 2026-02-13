@@ -1,0 +1,99 @@
+
+# https://artifacthub.io/packages/helm/external-dns/external-dns
+
+# DNS provider configuration
+provider:
+  name: rfc2136
+
+# Sources to watch for DNS records
+sources:
+  - ingress
+  - service
+  - traefik-proxy  # Traefik IngressRoute support
+
+
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+
+
+# -- Label filter to select resources for DNS management. # Unfortunately this is "ANDed" with annotationFilter, so we use only annotationFilter for now.
+#labelFilter: advertise-via-dns=true
+
+# -- Annotation filter to select resources for DNS management.
+annotationFilter: advertise-via-dns=true
+
+# -- Interval for DNS updates.
+interval: 30s # Currently there is an issue, where all external-dns records get deleted when manual updates are done in opnsense. Setting a shorter interval helps to reduce downtime.
+
+# Domain filter - only manage records for this domain
+domainFilters:
+  - ${EXTERNAL_DNS_DOMAIN_FILTERS}
+
+# RFC2136 specific configuration
+extraArgs: #https://github.com/kubernetes-sigs/external-dns/blob/dd10769ca95d9ed733929294601df2860b95f7f3/docs/flags.md?plain=1#L136
+  - --rfc2136-host=${EXTERNAL_DNS_BINDSERVER_IP}
+  - --rfc2136-port=53
+  - --rfc2136-zone=${CLUSTER_EXTERNAL_DOMAIN}
+  - --rfc2136-tsig-secret-alg=${EXTERNAL_DNS_TSIG_ALGORITHM}
+  - --rfc2136-tsig-keyname=${EXTERNAL_DNS_TSIG_KEYNAME}
+  - --rfc2136-tsig-axfr  # Use AXFR for zone transfers
+  - --txt-owner-id=external-dns-${OVERLAY_NAME}  # Unique identifier for this cluster
+  - --txt-prefix=_external-dns.  # Prefix for TXT records (ownership tracking)
+  - --rfc2136-min-ttl=60s  # Minimum TTL for created records
+
+# TSIG secret from environment variable
+env:
+  - name: EXTERNAL_DNS_RFC2136_TSIG_SECRET
+    valueFrom:
+      secretKeyRef:
+        name: external-dns-tsig
+        key: tsig-secret
+
+
+
+# Resource limits
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    cpu: 100m
+    memory: 128Mi
+
+# Security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 65534
+  capabilities:
+    drop:
+      - ALL
+
+
+# Policy for handling records
+policy: sync  # or "upsert-only" if you want to be more cautious
+
+# Service account
+serviceAccount:
+  create: true
+  name: external-dns
+
+# RBAC
+rbac:
+  create: true
+
+# Logging
+logLevel: info  # debug, info, warning, error
+logFormat: text  # text or json
+
+

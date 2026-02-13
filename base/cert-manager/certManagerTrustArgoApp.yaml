@@ -1,0 +1,37 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager-trust
+  namespace: $CERT_MGR_TRUST_NAMESPACE
+  annotations:
+          argocd.argoproj.io/sync-wave: "2"  #Deploy after cert-manager and cert-manager-issuers
+spec:
+  project: cluster-services
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: $CERT_MGR_TRUST_NAMESPACE
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    retry:
+      limit: 10
+      backoff:
+        duration: 20s
+        factor: 2
+        maxDuration: 10m
+  sources:
+    - chart: trust-manager
+      repoURL: quay.io/jetstack/charts
+      targetRevision: ${CERT_MGR_TRUST_HELM_VERSION}
+      helm:
+        releaseName: cert-manager-trust
+        valueFiles:
+          - $values/talos/rendered/${OVERLAY_NAME}/cert-manager/certManagerTrustValues.yaml
+    - repoURL: $GITEA_CLUSTER_SERVICES_REPO_URL
+      targetRevision: ${GITEA_CLUSTER_SERVICES_REPO_BRANCH}
+      ref: values
+      path: talos/rendered/${OVERLAY_NAME}/cert-manager
+      directory:
+        recurse: false
+        include: "{certManagerTrustBundle.yaml}"

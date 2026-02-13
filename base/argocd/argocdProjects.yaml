@@ -1,0 +1,73 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: cluster-services
+  namespace: ${ARGOCD_NAMESPACE}
+  labels:
+    initial-deploy-with-kubectl: "true"
+  annotations:
+    argocd.argoproj.io/sync-wave: "-10"
+spec:
+  description: "Project for cluster level services managed by ArgoCD"
+  sourceRepos: 
+    - "*"
+  sourceNamespaces: #Allow apps in this project to source from these namespaces
+    - "$CERT_MGR_NAMESPACE"
+    - "$CERT_MGR_CSI_NAMESPACE"
+    - "longhorn-system"
+    - "kube-system"
+    - "cnpg-system"
+    - "${ARGOCD_NAMESPACE}"
+    - "${GITEA_NAMESPACE}"
+    - "${GITEA_NAMESPACE}-runners"
+    - "traefik"
+    - "external-dns"
+    - "${RELOADER_NAMESPACE}"
+    - "${SMB_CSI_NAMESPACE}"
+  destinations:
+    - namespace: '*'
+      server: '*'
+  clusterResourceWhitelist: #Allow cluster-scoped resources to be by ArgoCD apps in this project
+  - group: '*'
+    kind: '*'
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: default
+  namespace: ${ARGOCD_NAMESPACE}
+  annotations:
+    description: "Default project for ArgoCD applications. Blocked from deploying to cluster-services namepsaces"
+  labels:
+    initial-deploy-with-kubectl: "true"
+spec:
+  sourceRepos: 
+    - "*"
+  sourceNamespaces:
+    - "*"
+  destinations:
+    - namespace: "!$CERT_MGR_NAMESPACE"
+      server: '*'
+    - namespace: "!$CERT_MGR_CSI_NAMESPACE"
+      server: '*'
+    - namespace: "!longhorn-system"
+      server: '*'
+    - namespace: "!kube-system"
+      server: '*'
+    - namespace: "!cnpg-system"
+      server: '*'
+    - namespace: "!${ARGOCD_NAMESPACE}"
+      server: '*'
+    - namespace: "!${GITEA_NAMESPACE}"
+      server: '*'
+    - namespace: "!${GITEA_NAMESPACE}-runners"
+      server: '*'
+    - namespace: "!traefik"
+      server: '*'
+    - namespace: "!external-dns"
+      server: '*'
+    - namespace: "!${RELOADER_NAMESPACE}"
+      server: '*'
+  namespaceResourceBlacklist:
+  - group: '*'
+    kind: '*'
