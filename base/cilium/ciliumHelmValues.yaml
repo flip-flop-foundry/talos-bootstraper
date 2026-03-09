@@ -50,6 +50,11 @@ encryption:
   wireguard:
     persistentKeepalive: 5s
 
+l2announcements:
+  enabled: ${CILIUM_L2_ANNOUNCEMENTS_ENABLED}
+
+externalIPs:
+  enabled: true
 
 ingressController:
   enabled: true

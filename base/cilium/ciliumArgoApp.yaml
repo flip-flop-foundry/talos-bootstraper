@@ -36,3 +36,6 @@ spec:
       targetRevision: ${GITEA_CLUSTER_SERVICES_REPO_BRANCH}
       path: rendered/${OVERLAY_NAME}/cilium
       ref: values
+      directory:
+        recurse: false
+        exclude: "{ciliumHelmValues.yaml,ciliumArgoApp.yaml}"

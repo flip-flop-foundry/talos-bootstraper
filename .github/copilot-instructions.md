@@ -117,7 +117,7 @@ Each cluster has one `.env` file exporting all configuration. Key variable group
 |-------|-------------------|
 | Talos | `OVERLAY_NAME`, `CLUSTER_EXTERNAL_DOMAIN`, `POD_CIDR`, `SERVICE_CIDR`, `KUBERNETES_VERSION`, `TALOS_CONTROL_NODES`, `TALOS_WORKER_NODES` |
 | Helm versions | `CILIUM_HELM_VERSION`, `TRAEFIK_HELM_VERSION`, `ARGOCD_HELM_VERSION`, `CERT_MGR_HELM_VERSION`, `LONGHORN_CHART_VERSION`, `CNPG_HELM_VERSION`, `EXTERNAL_DNS_HELM_VERSION`, `METRICS_SERVER_HELM_VERSION`, `RELOADER_HELM_VERSION`, `GITEA_HELM_VERSION` |
-| Networking | `CILIUM_LB_IP_CIDR` (BGP LoadBalancer range) |
+| Networking | `CILIUM_LB_IP_CIDR` (LoadBalancer IP pool), `CILIUM_BGP_LOCAL_ASN`, `CILIUM_BGP_PEER_ASN`, `CILIUM_BGP_PEER_ADDRESS` (BGP only) |
 | Storage | `LONGHORN_BACKUP_TARGET`, `LONGHORN_BACKUP_CRON_SCHEDULE`, `LONGHORN_BACKUP_RETAIN` |
 | DNS | `EXTERNAL_DNS_BINDSERVER_IP`, `EXTERNAL_DNS_TSIG_KEYNAME`, `EXTERNAL_DNS_DOMAIN_FILTERS` |
 | Gitea | `GITEA_DOMAIN_NAME`, `GITEA_CLUSTER_SERVICES_REPO_URL`, `GITEA_HELM_VERSION` |
@@ -153,13 +153,52 @@ Each cluster has one `.env` file exporting all configuration. Key variable group
 | Metrics Server | `https://kubernetes-sigs.github.io/metrics-server/` | `METRICS_SERVER_HELM_VERSION` |
 | Reloader | `https://stakater.github.io/stakater-helm-charts/` | `RELOADER_HELM_VERSION` |
 
+## LoadBalancer Mode (L2 vs BGP)
+
+Cilium provides LoadBalancer IP advertisement via two modes, toggled through `EXCLUDED_BASE`:
+
+### L2 Mode (default)
+
+Uses ARP announcements on the node network. IPs must be from the node subnet and excluded from DHCP.
+
+- `CILIUM_LB_IP_CIDR`: Range on node subnet (e.g. `192.168.1.200/28`)
+- `EXCLUDED_BASE` must include the three BGP CRD files:
+  ```
+  "cilium/ciliumBGPClusterConfig.yaml"
+  "cilium/ciliumBGPPeerConfig.yaml"
+  "cilium/ciliumBGPAdvertisement.yaml"
+  ```
+
+### BGP Mode
+
+Advertises LoadBalancer IPs via eBGP to an external router. IPs can be any routable CIDR.
+
+- `CILIUM_LB_IP_CIDR`: Any routable CIDR not overlapping Pod/Service CIDRs
+- `CILIUM_BGP_LOCAL_ASN`: Cluster BGP ASN (e.g. `64513`)
+- `CILIUM_BGP_PEER_ASN`: Router BGP ASN (e.g. `64512`)
+- `CILIUM_BGP_PEER_ADDRESS`: Router IP address
+- `EXCLUDED_BASE` must include the L2 policy file:
+  ```
+  "cilium/ciliumL2AnnouncementPolicy.yaml"
+  ```
+- Overlay must add `talos/talosPatchConfig.yaml` with `machine.nodeLabels.bgpPeer: "true"`
+
+### Key Design
+
+- `CiliumLoadBalancerIPPool` is common to both modes
+- Services (Traefik, ArgoCD) are mode-agnostic — no `loadBalancerClass` needed since Cilium is the sole LB controller
+- Mode selection is purely which Cilium CRDs get rendered, controlled by `EXCLUDED_BASE`
+
+See `overlays/yourCluster-l2/` and `overlays/yourCluster-bgp/` for complete examples.
+
 ## How to Add a New Cluster
 
-1. Create `overlays/<cluster>/<cluster>.env` (copy from `overlays/yourCluster/yourCluster.env`)
+1. Create `overlays/<cluster>/<cluster>.env` (copy from `overlays/yourCluster-l2/` or `overlays/yourCluster-bgp/`)
 2. Update: `OVERLAY_NAME`, `CLUSTER_EXTERNAL_DOMAIN`, CIDRs, node hostnames, versions
-3. Create `overlays/<cluster>/talos/` with generated machine configs
-4. Run `./adminTasks/render-overlay.sh overlays/<cluster>/<cluster>.env`
-5. Run `./adminTasks/cluster-bootstrap.sh overlays/<cluster>/<cluster>.env`
+3. Choose LoadBalancer mode and configure `EXCLUDED_BASE` accordingly (see above)
+4. Create `overlays/<cluster>/talos/` with generated machine configs
+5. Run `./adminTasks/render-overlay.sh overlays/<cluster>/<cluster>.env`
+6. Run `./adminTasks/cluster-bootstrap.sh overlays/<cluster>/<cluster>.env`
 
 ## How to Add a New Component
 

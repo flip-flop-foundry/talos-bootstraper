@@ -206,6 +206,28 @@ get_file_info() {
     echo "$component|$filename"
 }
 
+# Check if a component or file is excluded via EXCLUDED_BASE
+is_excluded() {
+    local component="$1"
+    local filename="$2"
+
+    if [[ ${#EXCLUDED_BASE[@]:-0} -eq 0 ]]; then
+        return 1
+    fi
+
+    for entry in "${EXCLUDED_BASE[@]}"; do
+        if [[ "$entry" == */* ]]; then
+            # File-level exclusion: match component/filename
+            [[ "$component/$filename" == "$entry" ]] && return 0
+        else
+            # Component-level exclusion: match component name
+            [[ "$component" == "$entry" ]] && return 0
+        fi
+    done
+
+    return 1
+}
+
 # Render a YAML file with envsubst
 render_yaml() {
     local input_file="$1"
@@ -323,6 +345,7 @@ process_files() {
     local merged_count=0
     local base_only_count=0
     local overlay_only_count=0
+    local excluded_count=0
     
     # Get all unique keys
     local -a all_keys=()
@@ -354,6 +377,13 @@ process_files() {
         
         local base_file="${base_map[$key]:-}"
         local overlay_file="${overlay_map[$key]:-}"
+        
+        # Skip excluded base components/files
+        if is_excluded "$component" "$filename"; then
+            log_info "[$file_number/${#all_keys[@]}] Skipping: $component/$filename (excluded)"
+            excluded_count=$((excluded_count + 1))
+            continue
+        fi
         
         if [[ -n "$base_file" && -n "$overlay_file" ]]; then
             # Collision: merge with overlay winning
@@ -388,6 +418,7 @@ process_files() {
     log_info "  Base-only files:    $base_only_count"
     log_info "  Overlay-only files: $overlay_only_count"
     log_info "  Merged files:       $merged_count"
+    log_info "  Excluded files:     $excluded_count"
     log_info "  Total files:        $((base_only_count + overlay_only_count + merged_count))"
     
     if [[ "$dry_run" == "false" ]]; then

@@ -24,13 +24,9 @@ service:
   enabled: true
   single: true  # One Service for both TCP and UDP
   type: LoadBalancer
-  labels:
-    advertise-via-bgp: "true"  # Critical for BGP advertisement
   annotations:
     advertise-via-dns: "true"  # Critical for ExternalDNS management
     external-dns.alpha.kubernetes.io/hostname: traefik.${CLUSTER_EXTERNAL_DOMAIN}  # Critical for ExternalDNS management
-  spec:
-    loadBalancerClass: io.cilium/bgp-control-plane
 
 ports:
   web:

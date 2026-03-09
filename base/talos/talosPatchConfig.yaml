@@ -13,8 +13,6 @@ machine:
       serverTLSBootstrap: true
   certSANs: 
     - "$TALOS_CLUSTER_ENDPOINT"
-  nodeLabels: 
-    bgpPeer: true #Label to identify nodes that should peer BGP
   kernel: 
     modules:
       - name: nvme_tcp
