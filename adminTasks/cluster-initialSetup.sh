@@ -7,12 +7,13 @@
 # kubectl
 # curl
 # jq
+# cilium-cli
 
 # Install Homebrew if not already installed,
 # follow the manual steps that are prompted after. 
 #/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-#brew install helm@3 yq kubernetes-cli k9s talosctl jq
+#brew install helm@3 yq kubernetes-cli k9s siderolabs/tap/talosctl jq
 
 
 ## Command run example: ./adminTasks/cluster-initialSetup.sh overlays/sek8s1/sek8s1.env;
@@ -110,12 +111,13 @@ if [ "$TALOS_OVERWRITE_CONF" = "true" ]; then
   rm -f "$OVERLAY_DIR/talos/worker.yaml"
   rm -f "$RENDERED_DIR/talos/"controlplane-*.yaml
   rm -f "$RENDERED_DIR/talos/"worker-*.yaml
-  rm -f talos/talosconfig
+
   log_warn "TALOS_OVERWRITE_CONF is true: will delete existing machineconfigs and talosconfig, if they exist."
 fi
 
 if [ "$TALOS_OVERWRITE_SECRETS" = "true" ]; then
-  rm -f talos/talos-secrets.yaml
+  rm -f "$OVERLAY_DIR/talos/talos-secrets.yaml"
+  rm -f "$OVERLAY_DIR/talos/talosconfig"
   log_warn "TALOS_OVERWRITE_SECRETS is true: will delete existing secrets, if they do exist."
 fi
 
@@ -137,11 +139,19 @@ fi
   envsubst < "${BASE_DIR}/talos/talosPatchConfig.yaml" > "talos/talosPatchConfigRendered.yaml"
   envsubst < "${BASE_DIR}/talos/talosPatchConfigControlplane.yaml" > "talos/talosPatchConfigControlplaneRendered.yaml"
 
+  # If TALOS_MIN_INSTALL_DISK_SIZE_GB is set, add a diskSelector with minimum size to avoid installing on small USB drives
+  if [ -n "${TALOS_MIN_INSTALL_DISK_SIZE_GB:-}" ]; then
+    log_info "TALOS_MIN_INSTALL_DISK_SIZE_GB is set: adding install diskSelector (size >= ${TALOS_MIN_INSTALL_DISK_SIZE_GB}GB)"
+    yq -i ".machine.install.diskSelector.size = \">= ${TALOS_MIN_INSTALL_DISK_SIZE_GB}GB\"" "talos/talosPatchConfigRendered.yaml"
+  fi
+
   CONFIG_PATCH_ARGS="--config-patch @talos/talosPatchConfigRendered.yaml"
   CONFIG_PATCH_CONTROLPLANE_ARGS="--config-patch-control-plane @talos/talosPatchConfigControlplaneRendered.yaml"
 
 
 log_info "Generating Talos config..."
+
+
 # set -x
 talosctl gen config --with-secrets "$OVERLAY_DIR/talos/talos-secrets.yaml" \
   --install-image "$TALOS_INSTALL_IMAGE" \
@@ -180,7 +190,7 @@ rm "talos/talosPatchConfigControlplaneRendered.yaml"
 # ADDITIONAL TRUSTED ROOT CAs
 # ============================================================================
 
-if [ -n "$TALOS_ADDITIONAL_TRUSTEDROOT_FILES" ]; then
+if [[ ${#TALOS_ADDITIONAL_TRUSTEDROOT_FILES[@]} -gt 0 ]]; then
   log_info "Adding additional trusted root CA certs to Talos config"
   for CERT_FILE in "${TALOS_ADDITIONAL_TRUSTEDROOT_FILES[@]}"; do
     if [ -f "$OVERLAY_DIR/$CERT_FILE" ]; then
@@ -202,8 +212,13 @@ fi
 # APPEND MANIFESTS TO CONTROL NODES
 # ============================================================================
 
-# Make sure systemVolumes.yaml are appended to controlplane.yaml
-TALOS_APPEND_MANIFESTS_CONTROL_NODES+=("${BASE_DIR}/talos/systemVolumes.yaml")
+# Append system volume encryption config only if KMS URL is configured
+if [ -n "${TALOS_DISK_ENCRYPTION_KMS_URL:-}" ]; then
+  log_info "Disk encryption enabled (KMS URL: $TALOS_DISK_ENCRYPTION_KMS_URL), appending systemVolumes.yaml"
+  TALOS_APPEND_MANIFESTS_CONTROL_NODES+=("${BASE_DIR}/talos/systemVolumes.yaml")
+else
+  log_info "Disk encryption disabled (TALOS_DISK_ENCRYPTION_KMS_URL is empty), skipping systemVolumes.yaml"
+fi
 
 # ============================================================================
 # DYNAMIC DISK DETECTION AND PER-NODE CONFIG GENERATION FOR CONTROL NODES
@@ -231,7 +246,7 @@ for NODE in "${TALOS_CONTROL_NODES[@]}"; do
   fi
 
   # Append any additional manifests specified in env file
-  if [ -n "$TALOS_APPEND_MANIFESTS_CONTROL_NODES" ]; then
+  if [[ ${#TALOS_APPEND_MANIFESTS_CONTROL_NODES[@]} -gt 0 ]]; then
     for MANIFEST in "${TALOS_APPEND_MANIFESTS_CONTROL_NODES[@]}"; do
       log_info "  Appending manifest $MANIFEST to $NODE_CONFIG_FILE"
       echo "---" >> "$NODE_CONFIG_FILE"
@@ -260,6 +275,22 @@ for NODE in "${TALOS_CONTROL_NODES[@]}"; do
   if ! talosctl get members --nodes "$NODE" &>/dev/null; then
     INSECURE=" --insecure"
   fi
+
+  # Add the node's FQDN to machine.certSANs (handles missing, empty, or existing list)
+  # Use select(di == 0) to only modify the first YAML document (main MachineConfig), not HostnameConfig/UserVolumeConfig etc.
+  NODE_FQDN="$NODE" yq -i '
+    (select(di == 0).machine.certSANs // []) as $existing |
+    select(di == 0).machine.certSANs = ($existing + [env(NODE_FQDN)] | unique)
+  ' "$NODE_CONFIG_FILE"
+
+  # Set the hostname in the HostnameConfig document to the node's FQDN and disable auto hostname
+  NODE_FQDN="$NODE" yq -i '
+    select(.kind == "HostnameConfig").hostname = env(NODE_FQDN) |
+    select(.kind == "HostnameConfig").auto = "off"
+  ' "$NODE_CONFIG_FILE"
+
+
+
 
   talosctl apply-config${INSECURE} --nodes "$NODE" --file "$NODE_CONFIG_FILE" # Have tested applying to two nodes at once, but it seems to be more reliable to apply one at a time. Maybe testing with 3+ nodes would be a good idea.
 

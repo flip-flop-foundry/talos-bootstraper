@@ -6,7 +6,7 @@ set -euo pipefail
 #
 # Usage: renderer.sh <ENV_FILE> [--dry-run]
 #
-# This script loads an environment file (e.g. talos/overlays/dkk8s1/dkk8s1.env),
+# This script loads an environment file (e.g. talos/overlays/yourCluster/yourCluster.env),
 # collects YAML files from talos/base/* (depth=1) and the overlay's immediate
 # subdirectories (recursive), renders them with envsubst, merges collisions
 # (overlay wins) using yq, and outputs to talos/rendered/${OVERLAY_NAME}.
@@ -23,7 +23,7 @@ usage() {
 Usage: $(basename "$0") <ENV_FILE> [VAR=value ...] [--dry-run]
 
 Arguments:
-  ENV_FILE    Path to the environment file (e.g. talos/overlays/dkk8s1/dkk8s1.env)
+  ENV_FILE    Path to the environment file (e.g. talos/overlays/yourCluster/yourCluster.env)
   VAR=value   Environment variable overrides (can specify multiple)
   --dry-run   Show what would be done without writing files
 
@@ -32,9 +32,9 @@ Requirements:
   - envsubst
 
 Example:
-  $(basename "$0") talos/overlays/dkk8s1/dkk8s1.env
-  $(basename "$0") talos/overlays/dkk8s1/dkk8s1.env GITEA_CLUSTER_SERVICES_REPO_URL=git://custom-url
-  $(basename "$0") talos/overlays/dkk8s1/dkk8s1.env VAR1=value1 VAR2=value2 --dry-run
+  $(basename "$0") talos/overlays/yourCluster/yourCluster.env
+  $(basename "$0") talos/overlays/yourCluster/yourCluster.env GITEA_CLUSTER_SERVICES_REPO_URL=git://custom-url
+  $(basename "$0") talos/overlays/yourCluster/yourCluster.env VAR1=value1 VAR2=value2 --dry-run
 EOF
     exit 1
 }
@@ -120,7 +120,6 @@ prepare_vars() {
     ENVSUBST_VARS=$(printf '$%s:' "${env_vars[@]}")
     ENVSUBST_VARS="${ENVSUBST_VARS%:}"
 
-    echo "Prepared variables for envsubst: $ENVSUBST_VARS"
     export ENVSUBST_VARS
 }
 
@@ -461,22 +460,16 @@ main() {
     
     # Determine directories
     local overlay_dir=$(dirname "$env_file")
-    # Find repo root by looking for talos directory from overlay_dir
-    local repo_root="$overlay_dir"
-    while [[ "$repo_root" != "/" ]]; do
-        if [[ -d "$repo_root/talos/base" ]]; then
-            break
-        fi
-        repo_root=$(dirname "$repo_root")
-    done
+    # Repo root is the script's parent's parent directory (script lives in adminTasks/)
+    local repo_root="$(cd "$SCRIPT_DIR/.." && pwd)"
     
-    if [[ ! -d "$repo_root/talos/base" ]]; then
-        log_error "Could not find talos/base directory from $overlay_dir"
+    if [[ ! -d "$repo_root/base" ]]; then
+        log_error "Could not find base directory at: $repo_root/base"
         exit 1
     fi
     
-    local base_dir="$repo_root/talos/base"
-    local output_dir="$repo_root/talos/rendered/${OVERLAY_NAME}"
+    local base_dir="$repo_root/base"
+    local output_dir="$repo_root/rendered/${OVERLAY_NAME}"
     
     log_info "Repository root: $repo_root"
     log_info "Base directory:  $base_dir"
