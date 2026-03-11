@@ -633,6 +633,15 @@ For CNPG-backed applications, use these sync waves to ensure correct ordering:
 
 These instructions apply whenever the Copilot Coding Agent picks up an issue in this repository.
 
+### How to Trigger Copilot
+
+There are two ways to start the Copilot Coding Agent:
+
+1. **Assign the issue to `copilot[bot]`** — a repository admin assigns the issue directly.
+2. **Mention `@copilot` in an issue or PR comment** — a repository admin posts a comment containing `@copilot`. The **Copilot Mention Trigger** workflow automatically assigns the issue to `copilot[bot]`, which kicks off the normal workflow. Non-admins who mention `@copilot` will receive an explanatory reply and no action will be taken.
+
+When you are working on a task via either trigger, respond to the comment or issue thread with a planning message before writing any code (see [Before Writing Any Code](#before-writing-any-code)).
+
 ### Issue Labels
 
 The following labels are managed automatically by the **Copilot Label Management** workflow and must not be applied or removed manually:
