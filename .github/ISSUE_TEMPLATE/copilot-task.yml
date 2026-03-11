@@ -1,0 +1,66 @@
+name: "Copilot Task"
+description: "Request the GitHub Copilot Coding Agent to implement a change or fix."
+title: "[Copilot] "
+labels: ["copilot-task"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template to request work from the **GitHub Copilot Coding Agent**.
+
+        **How it works:**
+        1. Fill in the sections below and submit the issue.
+        2. A repo admin will review the request and, if appropriate, assign the issue to **Copilot**.
+        3. Copilot will ask any clarifying questions directly in the issue comments.
+        4. Once the scope is clear, Copilot will open a pull request with the changes for review.
+
+        > **Note:** Only repository admins can assign issues to Copilot.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: "Summary"
+      description: "A short, clear description of what you want Copilot to do."
+      placeholder: "e.g. Add support for configuring an NTP server in the Talos machine config."
+    validations:
+      required: true
+
+  - type: textarea
+    id: motivation
+    attributes:
+      label: "Motivation / Background"
+      description: "Why is this change needed? Include any relevant context."
+      placeholder: "e.g. We need deterministic time sync across nodes to avoid certificate expiry issues."
+    validations:
+      required: false
+
+  - type: textarea
+    id: requirements
+    attributes:
+      label: "Requirements"
+      description: "List specific requirements or acceptance criteria."
+      placeholder: |
+        - Add `NTP_SERVER` variable to the overlay .env file.
+        - Reference it in `base/talos/talosPatchConfig.yaml`.
+        - Update both example overlays.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: "Relevant Files / Components"
+      description: "List any files or components that are likely to need changing."
+      placeholder: |
+        - `base/talos/`
+        - `overlays/yourCluster-l2/yourCluster-l2.env`
+    validations:
+      required: false
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: "Additional Notes"
+      description: "Anything else Copilot should know, e.g. things to avoid, related issues, external docs."
+    validations:
+      required: false

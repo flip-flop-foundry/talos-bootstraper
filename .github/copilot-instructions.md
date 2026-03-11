@@ -254,3 +254,44 @@ pxe/
 - Shell scripts use `set -euo pipefail` — strict error handling
 - All env vars use `export` for shell sourcing and envsubst compatibility
 - render-overlay.sh is zsh, cluster-bootstrap.sh is bash
+
+## Copilot Coding Agent — Working Instructions
+
+These instructions apply whenever the Copilot Coding Agent picks up an issue in this repository.
+
+### Before Writing Any Code
+
+1. **Read the issue carefully.** Identify every explicit requirement and any implicit constraints.
+2. **Ask clarifying questions first.** If any requirement is ambiguous — or if fulfilling it would require touching files not mentioned in the issue — post a comment on the issue asking for clarification **before** opening a pull request or writing code. Wait for a response. Do not guess.
+3. **Acknowledge scope.** Briefly summarise in an issue comment what you plan to change and why, so the requester can correct misunderstandings early.
+4. If possible with out adding a lot of complexity, avoid breaking existing clusters. Breaking existing clusters/deployments can be acceptable, if **stated very clearly** and **explained why** this is needed
+
+
+### Making Changes
+
+- **Minimal changes only.** Solve exactly what the issue asks. Do not refactor unrelated code, update unrelated versions, or add unrequested features.
+- **Follow existing patterns.** Match the style of the file you are editing:
+  - Shell scripts: `set -euo pipefail`, use `lib/logging.sh` helpers (`log_info`, `log_success`, `log_warn`, `log_error`), `readonly` for constants.
+  - YAML templates: use `${VARIABLE}` placeholders consistent with the existing whitelist; follow the ArgoCD multi-source pattern for new ArgoApps.
+  - Env files: `export VAR="value"` format.
+- **Keep `CLAUDE.md` and `.github/copilot-instructions.md` in sync.** If you modify either file, apply the identical change to the other.
+- **Do not commit secrets.** Never write real credentials, tokens, or private keys into any file.
+
+### Validating Changes
+
+Before raising a pull request, run the following checks inside the agent environment:
+
+```bash
+# Lint all shell scripts
+shellcheck adminTasks/*.sh adminTasks/lib/*.sh
+
+# Verify the render pipeline is not broken (using an example overlay)
+./adminTasks/render-overlay.sh overlays/yourCluster-l2/yourCluster-l2.env
+```
+
+### Pull Request Guidelines
+
+- **Title**: short, imperative, describes the change (e.g. `feat: add NTP server config to Talos patch`).
+- **Description**: explain *what* changed, *why*, and list every file modified.
+- **One concern per PR.** If an issue covers multiple unrelated concerns, raise separate PRs or ask the requester how to proceed.
+- **Do not self-merge.** Always request a human review.
