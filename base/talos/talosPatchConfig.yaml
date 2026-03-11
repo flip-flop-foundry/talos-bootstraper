@@ -28,7 +28,7 @@ machine:
   # Without this, Talos does not read the certs.d directory by default.
   files:
     - path: /etc/cri/conf.d/20-spegel-registry.part
-      permissions: 0o644
+      permissions: "0644"
       op: create
       content: |
         [plugins."io.containerd.cri.v1.images"]
