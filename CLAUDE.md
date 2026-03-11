@@ -635,11 +635,37 @@ For CNPG-backed applications, use these sync waves to ensure correct ordering:
 
 These instructions apply whenever the Copilot Coding Agent picks up an issue in this repository.
 
+### How to Trigger Copilot
+
+There are two ways to start the Copilot Coding Agent:
+
+1. **Assign the issue to `copilot[bot]`** — a repository admin assigns the issue directly.
+2. **Mention `@copilot` in an issue or PR comment** — a repository admin posts a comment containing `@copilot`. The **Copilot Mention Trigger** workflow automatically assigns the issue to `copilot[bot]`, which kicks off the normal workflow. Non-admins who mention `@copilot` will receive an explanatory reply and no action will be taken.
+
+When you are working on a task via either trigger, respond to the comment or issue thread with a planning message before writing any code (see [Before Writing Any Code](#before-writing-any-code)).
+
+### Issue Labels
+
+The following labels are managed automatically by the **Copilot Label Management** workflow and must not be applied or removed manually:
+
+| Label | Meaning |
+|-------|---------|
+| `ai-working` | Copilot has been assigned and is actively working on the issue |
+| `needs-human-review` | Copilot has opened a PR — a human must review before merging |
+
+When you are assigned to an issue the `ai-working` label is added automatically. When you open the pull request, `ai-working` is removed and `needs-human-review` is added to the linked issue automatically.
+
 ### Before Writing Any Code
 
 1. **Read the issue carefully.** Identify every explicit requirement and any implicit constraints (e.g. "don't break existing clusters").
-2. **Ask clarifying questions first.** If any requirement is ambiguous — or if fulfilling it would require touching files not mentioned in the issue — post a comment on the issue asking for clarification **before** opening a pull request or writing code. Wait for a response. Do not guess.
-3. **Acknowledge scope.** Briefly summarise in an issue comment what you plan to change and why, so the requester can correct misunderstandings early.
+2. **Post a planning comment first.** Before writing any code, post a comment on the issue that outlines:
+   - Your understanding of the problem
+   - The files you plan to change and why
+   - Any assumptions you are making
+   - Any questions or ambiguities you need resolved
+   Wait for at least one response/approval before proceeding. Do not guess on ambiguous requirements.
+3. **Iterate with comments.** For larger tasks, post progress comments at key decision points (e.g. after choosing an approach, before implementing a complex change). This is the equivalent of "planning mode" in editors.
+4. If possible without adding a lot of complexity, avoid breaking existing clusters. Breaking existing clusters/deployments can be acceptable, if **stated very clearly** and **explained why** this is needed.
 
 ### Making Changes
 
@@ -650,6 +676,44 @@ These instructions apply whenever the Copilot Coding Agent picks up an issue in 
   - Env files: `export VAR="value"` format.
 - **Keep `CLAUDE.md` and `.github/copilot-instructions.md` in sync.** If you modify either file, apply the identical change to the other.
 - **Do not commit secrets.** Never write real credentials, tokens, or private keys into any file.
+- **Add a `README.md` for every new component.** Whenever you add a new directory under `base/`, create a `README.md` in that directory. See [Component README Standard](#component-readme-standard) below.
+
+### Component README Standard
+
+Every directory under `base/<component>/` must contain a `README.md` with the following sections:
+
+```markdown
+# <Component Name>
+
+## What it does
+A brief description of what the component is and why it exists in this cluster.
+
+## Why it was added
+The motivation for including this component (e.g. the issue or requirement that drove it).
+
+## Dependencies
+List the other components in this repo that this component depends on (ignore widely-used
+infrastructure like Cilium, Longhorn, cert-manager, and Traefik unless there is a specific
+non-obvious dependency).
+
+Example:
+- **cnpg** — provides the PostgreSQL database used by this component
+- **reloader** — watches for Secret/ConfigMap changes and restarts this component's pods
+
+## Dependents
+List the other components in this repo that depend on this component.
+
+Example:
+- **gitea** — consumes the database managed by this CNPG cluster
+
+## User Guide
+Key operational information for someone running this component:
+- How to trigger a restart when a certificate or secret changes (if using Reloader)
+- How to connect to the service
+- Any common administrative tasks
+```
+
+Keep the dependency lists up to date whenever components are added or removed. You may omit a section if it does not apply (e.g. a component with no dependents).
 
 ### Validating Changes
 
@@ -662,6 +726,22 @@ shellcheck adminTasks/*.sh adminTasks/lib/*.sh
 # Verify the render pipeline is not broken (using an example overlay)
 ./adminTasks/render-overlay.sh overlays/yourCluster-l2/yourCluster-l2.env
 ```
+
+When creating or editing a Helm-based component, also run `helm template` to verify the rendered manifests meet the security guidelines:
+
+```bash
+# Add the chart repo (use the appropriate repo URL and chart name)
+helm repo add <repo-name> <repo-url>
+helm repo update
+
+# Render with your values file and inspect every resource
+helm template <release-name> <repo-name>/<chart-name> \
+  --version <CHART_VERSION> \
+  -f rendered/<overlay>/<component>/<component>HelmValues.yaml \
+  | grep -E 'runAsNonRoot|allowPrivilegeEscalation|readOnlyRootFilesystem|capabilities|seccompProfile|automountServiceAccountToken'
+```
+
+Check the output to confirm the security settings from the [Security Best Practices](#security-best-practices) section are present. If the chart does not expose these values, document why in the values file as a comment.
 
 ### Pull Request Guidelines
 
