@@ -42,7 +42,7 @@ export OVERLAY_DIR="$(cd "$(dirname "$CONFIG_FILE")" && pwd)"
 export RENDERED_OVERLAY_DIR="$(cd "$OVERLAY_DIR/../../rendered/$OVERLAY_NAME" && pwd)"
 export BASE_DIR="$(cd "$OVERLAY_DIR/../../base" && pwd)"
 export TALOSCONFIG=$OVERLAY_DIR/talos/talosconfig
-export GIT_ROOT="$(cd "$OVERLAY_DIR/../../.." && pwd)"
+export GIT_ROOT="$(git -C "$OVERLAY_DIR" rev-parse --show-toplevel)"
 export LIB_DIR="$SCRIPT_DIR/lib"
 
 export NR_OF_CONTROL_NODES=${#TALOS_CONTROL_NODES[@]}

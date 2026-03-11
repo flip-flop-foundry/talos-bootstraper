@@ -67,7 +67,7 @@ usage() {
 Usage: $(basename "$0") <ENV_FILE> [--force-recreate-gitea-org] [--force-recreate-argocd-svc-user]
 
 Arguments:
-  ENV_FILE                         Path to the environment file (e.g. talos/overlays/dkk8s1/dkk8s1.env)
+  ENV_FILE                         Path to the environment file (e.g. talos/overlays/yourCluster/yourCluster.env)
   --force-recreate-gitea-org       Delete and recreate organization and repository if they exist
   --force-recreate-argocd-svc-user Delete and recreate ArgoCD service account user and secrets
 
@@ -78,10 +78,10 @@ Requirements:
   - git
 
 Example:
-  $(basename "$0") talos/overlays/dkk8s1/dkk8s1.env
-  $(basename "$0") talos/overlays/dkk8s1/dkk8s1.env --force-recreate-gitea-org
-  $(basename "$0") talos/overlays/dkk8s1/dkk8s1.env --force-recreate-argocd-svc-user
-  $(basename "$0") talos/overlays/dkk8s1/dkk8s1.env --force-recreate-gitea-org --force-recreate-argocd-svc-user
+  $(basename "$0") talos/overlays/yourCluster/yourCluster.env
+  $(basename "$0") talos/overlays/yourCluster/yourCluster.env --force-recreate-gitea-org
+  $(basename "$0") talos/overlays/yourCluster/yourCluster.env --force-recreate-argocd-svc-user
+  $(basename "$0") talos/overlays/yourCluster/yourCluster.env --force-recreate-gitea-org --force-recreate-argocd-svc-user
 EOF
     exit 1
 }
@@ -238,7 +238,7 @@ main() {
     # Determine directories
     export SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
     export OVERLAY_DIR="$(cd "$(dirname "$env_file")" && pwd)"
-    export GIT_ROOT="$(cd "$OVERLAY_DIR/../../.." && pwd)"
+    export GIT_ROOT="$(git -C "$OVERLAY_DIR" rev-parse --show-toplevel)"
     
     # Setup kubectl config
     local talosconfig="$OVERLAY_DIR/talos/talosconfig"

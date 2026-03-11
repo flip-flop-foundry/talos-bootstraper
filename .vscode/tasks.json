@@ -1,0 +1,43 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Render Overlay",
+      "type": "shell",
+      "command": "${workspaceFolder}/adminTasks/render-overlay.sh",
+      "args": ["${input:envFile}"],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Apply Overlay",
+      "type": "shell",
+      "command": "${workspaceFolder}/adminTasks/cluster-bootstrap.sh",
+      "args": ["${input:envFile}"],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "envFile",
+      "type": "pickString",
+      "description": "Select the overlay env file to use",
+      "default": "overlays/tuborgnetes/tuborgnetes.env",
+      "options": [
+        "overlays/tuborgnetes/tuborgnetes.env",
+        "overlays/yourCluster/yourCluster.env"
+      ]
+    }
+  ]
+}

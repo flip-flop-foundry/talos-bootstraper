@@ -1,0 +1,17 @@
+apiVersion: cilium.io/v2alpha1
+kind: CiliumBGPClusterConfig
+metadata:
+  name: bgp-cluster-config
+spec:
+  nodeSelector:
+    matchLabels:
+      bgpPeer: "true"
+  bgpInstances:
+    - name: default
+      localASN: ${CILIUM_BGP_LOCAL_ASN}
+      peers:
+        - name: opnsense
+          peerASN: ${CILIUM_BGP_PEER_ASN}
+          peerAddress: ${CILIUM_BGP_PEER_ADDRESS}
+          peerConfigRef:
+            name: bgp-peer-config
