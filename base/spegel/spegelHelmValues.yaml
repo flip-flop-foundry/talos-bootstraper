@@ -1,0 +1,64 @@
+# https://artifacthub.io/packages/helm/spegel/spegel
+# https://spegel.dev/docs/getting-started/
+#
+# Talos-specific notes:
+# - Spegel mounts /etc/containerd/certs.d as a hostPath (DirectoryOrCreate) to write mirror configs.
+# - Talos must be configured to load containerd registry config from this directory.
+#   This is done via a machine.files patch in talosPatchConfig.yaml which adds
+#   /etc/cri/conf.d/20-spegel-registry.part to configure the CRI plugin's config_path.
+# - All other paths (/run/containerd/containerd.sock, /var/lib/containerd/...) are the
+#   same as standard Kubernetes and do not require special Talos configuration.
+#
+# mTLS: Spegel does not use mTLS for its peer-to-peer communication; it uses an
+# HTTP registry protocol over the cluster-internal network (pod/node IPs). Access is
+# restricted to cluster nodes by design since the mirror configuration is only written
+# to local containerd config and the hostPort (30020) is bound to node IPs on the private
+# cluster network.
+
+# Talos containerd socket path — same as the chart default
+spegel:
+  containerdSock: "/run/containerd/containerd.sock"
+  containerdNamespace: "k8s.io"
+  # Path where Spegel writes per-registry mirror configuration.
+  # Must match the config_path set in the Talos CRI plugin patch.
+  containerdRegistryConfigPath: "/etc/containerd/certs.d"
+  containerdContentPath: "/var/lib/containerd/io.containerd.content.v1.content"
+  containerdMirrorAdd: true
+  resolveTags: true
+  logLevel: "INFO"
+
+# system-node-critical ensures Spegel is scheduled before lower-priority workloads
+# and is not evicted during node pressure events.
+priorityClassName: system-node-critical
+
+# Resource limits — Spegel is lightweight; keep footprint small.
+resources:
+  requests:
+    memory: 128Mi
+    cpu: 10m
+  limits:
+    memory: 256Mi
+    cpu: 200m
+
+# Tolerations — must tolerate all taints so Spegel can run on every node,
+# including control-plane nodes and nodes with the Nidhogg taint
+# (nidhogg.uswitch.com/spegel.spegel:NoSchedule).
+# Spegel must start before Nidhogg removes its taint so it can serve images.
+tolerations:
+  - key: CriticalAddonsOnly
+    operator: Exists
+  - effect: NoExecute
+    operator: Exists
+  - effect: NoSchedule
+    operator: Exists
+
+# Restrict scheduling to Linux nodes only
+nodeSelector:
+  kubernetes.io/os: linux
+
+# Liveness probe is disabled (chart default). The startup probe (periodSeconds: 3,
+# failureThreshold: 60) covers bootstrap health, and the readiness probe handles
+# ongoing status. Enabling liveness can cause restart loops when Spegel is under
+# heavy load resolving tags for a large image set on bootstrap.
+livenessProbe:
+  enabled: false

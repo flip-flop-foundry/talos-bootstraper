@@ -27,7 +27,7 @@ adminTasks/              # Bootstrap and rendering scripts
 
 Each subdirectory is a self-contained component:
 argocd, cert-manager, cilium, cluster-wide, cnpg, csi-snapshot-controller, external-dns,
-gitea, gitea-runners, longhorn, metrics-server, reloader, talos, traefik
+gitea, gitea-runners, longhorn, metrics-server, nidhogg, reloader, spegel, talos, traefik
 
 ## Templating System
 
@@ -156,6 +156,8 @@ Each cluster has one `.env` file exporting all configuration. Key variable group
 | External-DNS | `https://kubernetes-sigs.github.io/external-dns/` | `EXTERNAL_DNS_HELM_VERSION` |
 | Metrics Server | `https://kubernetes-sigs.github.io/metrics-server/` | `METRICS_SERVER_HELM_VERSION` |
 | Reloader | `https://stakater.github.io/stakater-helm-charts/` | `RELOADER_HELM_VERSION` |
+| Spegel | `https://spegel-org.github.io/spegel` | `SPEGEL_HELM_VERSION` |
+| Nidhogg | `oci://ghcr.io/pelotech/charts` | `NIDHOGG_HELM_VERSION` |
 
 ## LoadBalancer Mode (L2 vs BGP)
 

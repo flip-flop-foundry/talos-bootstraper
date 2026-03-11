@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ${NIDHOGG_NAMESPACE}
+  labels:
+    initial-deploy-with-kubectl: "true"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nidhogg
+  namespace: ${ARGOCD_NAMESPACE}
+  annotations:
+    # Deploy in the same wave as Spegel (-45) so the taint controller is established
+    # at the same time. Nidhogg watches the Spegel DaemonSet and only removes its node
+    # taint once Spegel is ready, preventing other pods from scheduling on a new node
+    # before image caching is available.
+    argocd.argoproj.io/sync-wave: "-45"
+spec:
+  project: cluster-services
+  destination:
+    namespace: ${NIDHOGG_NAMESPACE}
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
+      - CreateNamespace=false
+    retry:
+      limit: 10
+      backoff:
+        duration: 20s
+        factor: 2
+        maxDuration: 10m
+  sources:
+    - chart: nidhogg
+      repoURL: oci://ghcr.io/pelotech/charts #https://github.com/pelotech/nidhogg
+      targetRevision: ${NIDHOGG_HELM_VERSION}
+      helm:
+        releaseName: nidhogg
+        valueFiles:
+          - $values/rendered/${OVERLAY_NAME}/nidhogg/nidhoggHelmValues.yaml
+    - repoURL: ${GITEA_CLUSTER_SERVICES_REPO_URL}
+      targetRevision: ${GITEA_CLUSTER_SERVICES_REPO_BRANCH}
+      ref: values

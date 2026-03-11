@@ -1,0 +1,57 @@
+# https://github.com/pelotech/nidhogg
+#
+# Nidhogg taints new nodes with a NoSchedule taint until the watched DaemonSet is ready.
+# This ensures Spegel (image cache) is running on a node before general workloads are scheduled.
+#
+# Taint format: <taintNamePrefix>/<namespace>.<name>:NoSchedule
+# For this config: nidhogg.uswitch.com/spegel.spegel:NoSchedule
+#
+# Spegel's DaemonSet already has broad tolerations (NoSchedule operator: Exists) so
+# it can start on a node even while the Nidhogg taint is present — this is required
+# so Spegel can become ready and Nidhogg can subsequently remove the taint.
+
+replicaCount: 2
+
+configuration:
+  # Watch the Spegel DaemonSet. Nodes will be tainted until Spegel is ready on them.
+  daemonsets:
+    - name: spegel
+      namespace: ${SPEGEL_NAMESPACE}
+  # Delay (seconds) after Spegel becomes ready before removing the taint.
+  # A small delay avoids a race between taint removal and pod scheduling.
+  taintRemovalDelayInSeconds: 5
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65534
+  runAsGroup: 65534
+  fsGroup: 65534
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+serviceAccount:
+  create: true
+  # automount is intentionally enabled: Nidhogg is a Kubernetes controller that
+  # requires API access to watch DaemonSets and manage node taints.
+  automount: true
+
+# Allow the Nidhogg controller to run on control-plane nodes
+tolerations:
+  - key: "node-role.kubernetes.io/control-plane"
+    operator: "Exists"
+    effect: "NoSchedule"
