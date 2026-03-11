@@ -1,15 +1,36 @@
 # This workflow enables triggering the GitHub Copilot Coding Agent by mentioning
-# @copilot in an issue or pull request comment.
+# @copilot in issues and pull requests — both bodies and comments.
 #
-# Issue comments:
-#   When an admin mentions @copilot, the issue is assigned to copilot[bot].
-#   This in turn triggers the "Copilot Label Management" workflow which applies
-#   the "ai-working" label. Non-admins receive an explanatory reply.
+# Covered event paths (all require the triggering user to be a repo admin):
 #
-# Pull request review comments:
-#   When @copilot is mentioned in a PR comment the agent is natively notified
-#   by GitHub. This workflow adds the "ai-working" label back to any linked issue
-#   so the state is visible, and posts a confirmation comment on the PR.
+#   Issue body (opened/edited):
+#     Body contains @copilot → issue assigned to copilot[bot]; non-admins get
+#     a reply explaining the restriction.
+#
+#   Issue comment (created):
+#     Comment contains @copilot → issue assigned to copilot[bot]; non-admins
+#     get a reply.
+#
+#   PR body (opened/edited):
+#     Body contains @copilot → ai-working label re-applied on linked issues
+#     (agent is natively invoked by GitHub); non-admins get a PR comment reply.
+#
+#   PR conversation comment (created, non-inline):
+#     Comment contains @copilot → ai-working label re-applied on linked issues;
+#     non-admins get a reply.
+#
+#   PR inline review comment (created):
+#     Comment contains @copilot → ai-working label re-applied on linked issues;
+#     non-admins get a reply.
+#
+# Note: GitHub natively invokes the Copilot agent on @mention in PR threads.
+# Our workflow cannot prevent that native invocation, but it enforces the
+# admin-only policy by posting a visible warning for non-admin mentions.
+# Note: each job independently guards against bot-comment loops via
+# `github.event.sender.login != 'copilot[bot]'` in its `if:` condition.
+# GitHub Actions job conditions cannot reference shared variables, so this
+# guard must be repeated per job — the string 'copilot[bot]' is a static
+# GitHub-defined identifier and will not change.
 name: "Copilot Mention Trigger"
 
 on:
@@ -17,18 +38,81 @@ on:
     types: [created]
   pull_request_review_comment:
     types: [created]
+  issues:
+    types: [opened, edited]
+  pull_request:
+    types: [opened, edited]
 
 jobs:
   # ─────────────────────────────────────────────────────────────────────────────
-  # Issue comment — assign to copilot[bot] when an admin mentions @copilot
+  # Issue body (opened / edited) — assign to copilot[bot] if body mentions @copilot
   # ─────────────────────────────────────────────────────────────────────────────
-  handle-issue-mention:
-    name: Assign issue to Copilot on @mention
-    # Only run for issue comments (not PR comments) that mention @copilot
+  handle-issue-body-mention:
+    name: Assign issue to Copilot on body @mention
+    if: >
+      github.event_name == 'issues' &&
+      contains(github.event.issue.body, '@copilot') &&
+      github.event.sender.login != 'copilot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: Check permissions and assign to copilot
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner    = context.repo.owner;
+            const repo     = context.repo.repo;
+            const actor    = context.payload.sender.login;
+            const issueNum = context.issue.number;
+
+            let permission;
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner, repo, username: actor,
+              });
+              permission = data.permission;
+            } catch {
+              permission = 'none';
+            }
+
+            if (permission !== 'admin') {
+              await github.rest.issues.createComment({
+                owner, repo,
+                issue_number: issueNum,
+                body: `@${actor} Only repository admins can trigger the GitHub Copilot Coding Agent via @mention. Please ask a repository admin to assign or mention @copilot.`,
+              });
+              core.notice(`@mention by non-admin @${actor} on issue #${issueNum} (via issue body) — ignored.`);
+              return;
+            }
+
+            // Skip if copilot[bot] is already assigned (e.g. edited body after first trigger)
+            const { data: issue } = await github.rest.issues.get({ owner, repo, issue_number: issueNum });
+            const alreadyAssigned = (issue.assignees || []).some(a => a.login === 'copilot[bot]');
+            if (alreadyAssigned) {
+              core.notice(`Issue #${issueNum} already assigned to copilot[bot] — skipping.`);
+              return;
+            }
+
+            await github.rest.issues.addAssignees({
+              owner, repo,
+              issue_number: issueNum,
+              assignees: ['copilot[bot]'],
+            });
+            core.notice(`Issue #${issueNum} assigned to copilot[bot] by admin @${actor} (via issue body).`);
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # Issue comment (created) — assign to copilot[bot] when an admin mentions @copilot
+  # ─────────────────────────────────────────────────────────────────────────────
+  handle-issue-comment-mention:
+    name: Assign issue to Copilot on comment @mention
+    # issue_comment fires for both issue and PR threads; filter to issues only here
     if: >
       github.event_name == 'issue_comment' &&
       !github.event.issue.pull_request &&
-      contains(github.event.comment.body, '@copilot')
+      contains(github.event.comment.body, '@copilot') &&
+      github.event.sender.login != 'copilot[bot]'
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -43,13 +127,6 @@ jobs:
             const commenter = context.payload.sender.login;
             const issueNum  = context.issue.number;
 
-            // Skip if the comment is from copilot[bot] itself (avoid loops)
-            if (commenter === 'copilot[bot]') {
-              core.notice('Comment is from copilot[bot] — skipping.');
-              return;
-            }
-
-            // Check commenter's permission level
             let permission;
             try {
               const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
@@ -61,13 +138,12 @@ jobs:
             }
 
             if (permission !== 'admin') {
-              // Let the commenter know only admins can trigger Copilot
               await github.rest.issues.createComment({
                 owner, repo,
                 issue_number: issueNum,
                 body: `@${commenter} Only repository admins can trigger the GitHub Copilot Coding Agent via @mention. Please ask a repository admin to assign or mention @copilot.`,
               });
-              core.notice(`@mention by non-admin @${commenter} on issue #${issueNum} — ignored.`);
+              core.notice(`@mention by non-admin @${commenter} on issue #${issueNum} (via issue comment) — ignored.`);
               return;
             }
 
@@ -78,15 +154,137 @@ jobs:
               issue_number: issueNum,
               assignees: ['copilot[bot]'],
             });
-
-            core.notice(`Issue #${issueNum} assigned to copilot[bot] by admin @${commenter}.`);
+            core.notice(`Issue #${issueNum} assigned to copilot[bot] by admin @${commenter} (via issue comment).`);
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # PR review comment — re-apply "ai-working" on linked issue and acknowledge
+  # PR body (opened / edited) — admin check, then delegate label update to helper
   # ─────────────────────────────────────────────────────────────────────────────
-  handle-pr-mention:
-    name: Acknowledge @copilot mention in PR comment
-    # Only run for PR review comments that mention @copilot and are not from the bot
+  handle-pr-body-check:
+    name: Guard @copilot mention in PR body (admin check)
+    if: >
+      github.event_name == 'pull_request' &&
+      contains(github.event.pull_request.body, '@copilot') &&
+      github.event.sender.login != 'copilot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    outputs:
+      is_admin: ${{ steps.check.outputs.is_admin }}
+
+    steps:
+      - name: Check admin permission
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo  = context.repo.repo;
+            const actor = context.payload.sender.login;
+            const prNum = context.payload.pull_request.number;
+
+            let permission;
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner, repo, username: actor,
+              });
+              permission = data.permission;
+            } catch {
+              permission = 'none';
+            }
+
+            if (permission !== 'admin') {
+              await github.rest.issues.createComment({
+                owner, repo,
+                issue_number: prNum,
+                body: `@${actor} Only repository admins can trigger the GitHub Copilot Coding Agent via @mention. Please ask a repository admin to mention @copilot.`,
+              });
+              core.notice(`@mention by non-admin @${actor} on PR #${prNum} (via PR body) — ignored.`);
+              core.setOutput('is_admin', 'false');
+            } else {
+              core.notice(`Admin @${actor} mentioned @copilot in PR #${prNum} body — triggering label update.`);
+              core.setOutput('is_admin', 'true');
+            }
+
+  handle-pr-body-label:
+    name: Reapply ai-working label after PR body @mention
+    needs: handle-pr-body-check
+    if: needs.handle-pr-body-check.outputs.is_admin == 'true'
+    uses: ./.github/workflows/copilot-reapply-label.yml
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+    permissions:
+      issues: write
+      pull-requests: read
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PR conversation comment (non-inline) — admin check, then delegate label update
+  # issue_comment fires for PR threads too; filter to PRs here
+  # ─────────────────────────────────────────────────────────────────────────────
+  handle-pr-conversation-check:
+    name: Guard @copilot mention in PR conversation comment (admin check)
+    if: >
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '@copilot') &&
+      github.event.sender.login != 'copilot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    outputs:
+      is_admin: ${{ steps.check.outputs.is_admin }}
+
+    steps:
+      - name: Check admin permission
+        id: check
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner     = context.repo.owner;
+            const repo      = context.repo.repo;
+            const commenter = context.payload.sender.login;
+            const prNumber  = context.issue.number;  // issue.number == PR number here
+
+            let permission;
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner, repo, username: commenter,
+              });
+              permission = data.permission;
+            } catch {
+              permission = 'none';
+            }
+
+            if (permission !== 'admin') {
+              await github.rest.issues.createComment({
+                owner, repo,
+                issue_number: prNumber,
+                body: `@${commenter} Only repository admins can trigger the GitHub Copilot Coding Agent via @mention. Please ask a repository admin to mention @copilot.`,
+              });
+              core.notice(`@mention by non-admin @${commenter} on PR #${prNumber} (via PR conversation comment) — ignored.`);
+              core.setOutput('is_admin', 'false');
+            } else {
+              core.notice(`Admin @${commenter} mentioned @copilot in PR #${prNumber} conversation — triggering label update.`);
+              core.setOutput('is_admin', 'true');
+            }
+
+  handle-pr-conversation-label:
+    name: Reapply ai-working label after PR conversation @mention
+    needs: handle-pr-conversation-check
+    if: needs.handle-pr-conversation-check.outputs.is_admin == 'true'
+    uses: ./.github/workflows/copilot-reapply-label.yml
+    with:
+      pr_number: ${{ github.event.issue.number }}
+    permissions:
+      issues: write
+      pull-requests: read
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # PR inline review comment — admin check, then delegate label update
+  # ─────────────────────────────────────────────────────────────────────────────
+  handle-pr-review-comment-check:
+    name: Guard @copilot mention in PR inline review comment (admin check)
     if: >
       github.event_name == 'pull_request_review_comment' &&
       contains(github.event.comment.body, '@copilot') &&
@@ -95,71 +293,50 @@ jobs:
     permissions:
       issues: write
       pull-requests: write
+    outputs:
+      is_admin: ${{ steps.check.outputs.is_admin }}
 
     steps:
-      - name: Re-apply ai-working label on linked issue
+      - name: Check admin permission
+        id: check
         uses: actions/github-script@v7
         with:
           script: |
             const owner     = context.repo.owner;
             const repo      = context.repo.repo;
-            const pr        = context.payload.pull_request;
             const commenter = context.payload.sender.login;
+            const prNumber  = context.payload.pull_request.number;
 
-            // Skip if the comment is from copilot[bot] itself (avoid loops)
-            if (commenter === 'copilot[bot]') {
-              core.notice('Comment is from copilot[bot] — skipping.');
-              return;
-            }
-
-            // Parse linked issue numbers from the PR body.
-            // Supports: "Closes #N", "Fixes: #N", "Resolves #123", etc.
-            const prBody = pr.body || '';
-            const linkedIssues = [];
-            const pattern = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+#(\d+)/gi;
-            let match;
-            while ((match = pattern.exec(prBody)) !== null) {
-              linkedIssues.push(parseInt(match[1], 10));
-            }
-
-            // Ensure the "ai-working" label exists
+            let permission;
             try {
-              await github.rest.issues.getLabel({ owner, repo, name: 'ai-working' });
-            } catch {
-              await github.rest.issues.createLabel({
-                owner, repo,
-                name: 'ai-working',
-                color: 'fbca04',
-                description: 'GitHub Copilot is currently working on this issue',
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner, repo, username: commenter,
               });
+              permission = data.permission;
+            } catch {
+              permission = 'none';
             }
 
-            for (const issueNumber of linkedIssues) {
-              // Only re-apply the label if the issue is currently assigned to copilot[bot]
-              let assignees = [];
-              try {
-                const { data } = await github.rest.issues.get({
-                  owner, repo, issue_number: issueNumber,
-                });
-                assignees = (data.assignees || []).map(a => a.login);
-              } catch (err) {
-                core.warning(`Could not fetch issue #${issueNumber}: ${err.message}`);
-                continue;
-              }
-
-              if (!assignees.includes('copilot[bot]')) {
-                core.notice(`Issue #${issueNumber} is not assigned to copilot[bot] — skipping label update.`);
-                continue;
-              }
-
-              try {
-                await github.rest.issues.addLabels({
-                  owner, repo,
-                  issue_number: issueNumber,
-                  labels: ['ai-working'],
-                });
-                core.notice(`Re-applied "ai-working" to issue #${issueNumber} (Copilot mentioned in PR #${pr.number}).`);
-              } catch (err) {
-                core.warning(`Could not add label to issue #${issueNumber}: ${err.message}`);
-              }
+            if (permission !== 'admin') {
+              await github.rest.issues.createComment({
+                owner, repo,
+                issue_number: prNumber,
+                body: `@${commenter} Only repository admins can trigger the GitHub Copilot Coding Agent via @mention. Please ask a repository admin to mention @copilot.`,
+              });
+              core.notice(`@mention by non-admin @${commenter} on PR #${prNumber} (via inline review comment) — ignored.`);
+              core.setOutput('is_admin', 'false');
+            } else {
+              core.notice(`Admin @${commenter} mentioned @copilot in PR #${prNumber} review comment — triggering label update.`);
+              core.setOutput('is_admin', 'true');
             }
+
+  handle-pr-review-comment-label:
+    name: Reapply ai-working label after PR review comment @mention
+    needs: handle-pr-review-comment-check
+    if: needs.handle-pr-review-comment-check.outputs.is_admin == 'true'
+    uses: ./.github/workflows/copilot-reapply-label.yml
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+    permissions:
+      issues: write
+      pull-requests: read
