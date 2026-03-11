@@ -7,7 +7,7 @@
 # Using fromEntities: cluster covers all cluster nodes and pods (including the local node),
 # which is exactly the set of principals that legitimately need to talk to Spegel.
 #
-# The metrics port (9090) is cluster-internal only — no external scraping.
+# Metrics port (9090) is intentionally excluded — no Prometheus stack is deployed.
 # The cleanup probe port (8080) is cluster-internal only.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -22,7 +22,8 @@ spec:
   ingress:
     # Allow registry (5000), hostPort mirror traffic is forwarded here by the kernel.
     # Allow router (5001 TCP/UDP) for peer-to-peer content routing between Spegel instances.
-    # Allow metrics (9090) and cleanup probe (8080) from within the cluster.
+    # Allow cleanup probe (8080) from within the cluster.
+    # Metrics (9090) is disabled — not exposed.
     - fromEntities:
         - cluster
       toPorts:
@@ -33,8 +34,6 @@ spec:
               protocol: TCP
             - port: "5001"
               protocol: UDP
-            - port: "9090"
-              protocol: TCP
             - port: "8080"
               protocol: TCP
   egress:

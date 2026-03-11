@@ -63,3 +63,12 @@ nodeSelector:
 # heavy load resolving tags for a large image set on bootstrap.
 livenessProbe:
   enabled: false
+
+# Prometheus ServiceMonitor and Grafana dashboard are disabled — no metrics stack deployed.
+# To enable scraping, set serviceMonitor.enabled: true and add port 9090 back to
+# spegelNetworkPolicy.yaml.
+serviceMonitor:
+  enabled: false
+
+grafanaDashboard:
+  enabled: false

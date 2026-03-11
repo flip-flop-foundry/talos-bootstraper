@@ -55,3 +55,7 @@ tolerations:
   - key: "node-role.kubernetes.io/control-plane"
     operator: "Exists"
     effect: "NoSchedule"
+
+# Nidhogg exposes a metrics port (8080) internally in the container, but the chart
+# does not create a ServiceMonitor or any Prometheus scrape configuration.
+# Metrics are therefore not actively exposed or scraped.

@@ -46,16 +46,18 @@ kubectl -n spegel logs -l app.kubernetes.io/name=spegel --tail=50
 
 ### Verifying mirror configuration on a node
 
-SSH to any node (via `talosctl`) and check that containerd is loading the mirror config:
+Talos nodes do not support SSH. Use `talosctl` to inspect files directly on the node:
 
 ```bash
-# Should show config_path = "/etc/containerd/certs.d"
-cat /etc/cri/conf.d/20-spegel-registry.part
+# Verify the CRI config fragment is in place (should show config_path = "/etc/containerd/certs.d")
+talosctl read /etc/cri/conf.d/20-spegel-registry.part --nodes <node-ip>
 
-# Should show per-registry mirror entries written by Spegel
-ls /etc/containerd/certs.d/
+# List per-registry mirror configs written by Spegel
+talosctl ls /etc/containerd/certs.d/ --nodes <node-ip>
 ```
+
+Replace `<node-ip>` with the IP of the node you want to inspect.
 
 ### Metrics
 
-Spegel exposes Prometheus metrics on port `9090`. If a Prometheus stack is deployed, metrics can be scraped from each DaemonSet pod.
+Metrics are currently disabled. `serviceMonitor.enabled` and `grafanaDashboard.enabled` are both set to `false` in `spegelHelmValues.yaml`, and port 9090 is not exposed by the CiliumNetworkPolicy. To enable metrics scraping in future, set `serviceMonitor.enabled: true` in the Helm values and add port 9090 back to `spegelNetworkPolicy.yaml`.
