@@ -44,7 +44,29 @@ ports:
     tls:
       enabled: true
 
-# Apply HSTS middleware globally to all HTTPS routes
+# Enforce TLS 1.2+ and forward-secrecy-only cipher suites cluster-wide.
+# The 'default' TLSOption applies to all routes that don't reference their own option.
+# TLS 1.3 ciphers are fixed in Go's TLS stack and are always enabled automatically.
+tlsOptions:
+  default:
+    minVersion: VersionTLS12
+    cipherSuites:
+      # ECDHE (forward secrecy) + AEAD ciphers only.
+      # CBC, non-FS, and deprecated ciphers are intentionally excluded.
+      - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+      - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+      - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+      - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+      - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+      - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+    curvePreferences:
+      # X25519 first: faster and more secure than NIST P-curves for most clients.
+      # CurveP521 omitted: no practical security gain over P384, significantly slower.
+      - X25519
+      - CurveP256
+      - CurveP384
+
+# Apply security headers middleware globally to all HTTPS routes
 additionalArguments:
   - "--entrypoints.websecure.http.middlewares=traefik-hsts-headers@kubernetescrd"
 
@@ -61,6 +83,12 @@ extraObjects:
         stsSeconds: 31536000       # 1 year
         stsIncludeSubdomains: true
         stsPreload: true
+        # Prevent MIME-type sniffing attacks
+        contentTypeNosniff: true
+        # Prevent clickjacking — allow framing from same origin only
+        customFrameOptionsValue: "SAMEORIGIN"
+        # Limit referrer information sent cross-origin
+        referrerPolicy: "strict-origin-when-cross-origin"
   - apiVersion: cert-manager.io/v1
     kind: Certificate
     metadata:
