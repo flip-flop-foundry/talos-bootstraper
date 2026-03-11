@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# Image Factory API library for Talos PXE boot
+# Provides functions to create schematics and download PXE boot assets
+# from https://factory.talos.dev
+
+FACTORY_BASE_URL="https://factory.talos.dev"
+
+# Create a schematic on the Image Factory and return the schematic ID.
+# Uses TALOS_SCHEMATIC_EXTENSIONS and TALOS_SCHEMATIC_EXTRA_KERNEL_ARGS arrays from env.
+# Returns: schematic ID (hash) on stdout
+create_schematic() {
+  local schematic_yaml=""
+
+  # Build the schematic YAML
+  schematic_yaml="customization:"
+
+  # Add extensions
+  if [[ ${#TALOS_SCHEMATIC_EXTENSIONS[@]} -gt 0 ]]; then
+    schematic_yaml+=$'\n  systemExtensions:'
+    schematic_yaml+=$'\n    officialExtensions:'
+    for ext in "${TALOS_SCHEMATIC_EXTENSIONS[@]}"; do
+      schematic_yaml+=$'\n      - '"$ext"
+    done
+  fi
+
+  # Add extra kernel args
+  if [[ ${#TALOS_SCHEMATIC_EXTRA_KERNEL_ARGS[@]} -gt 0 ]]; then
+    schematic_yaml+=$'\n  extraKernelArgs:'
+    for arg in "${TALOS_SCHEMATIC_EXTRA_KERNEL_ARGS[@]}"; do
+      schematic_yaml+=$'\n    - '"$arg"
+    done
+  fi
+
+  log_info "Creating schematic on Image Factory..."
+  log_info "Schematic YAML:"
+  echo "$schematic_yaml" | while IFS= read -r line; do log_info "  $line"; done
+
+  local response
+  response=$(curl -sS -X POST "${FACTORY_BASE_URL}/schematics" \
+    -H "Content-Type: application/yaml" \
+    --data-raw "$schematic_yaml" 2>&1)
+
+  local schematic_id
+  schematic_id=$(echo "$response" | jq -r '.id // empty' 2>/dev/null)
+
+  if [[ -z "$schematic_id" ]]; then
+    log_error "Failed to create schematic. Response: $response"
+    return 1
+  fi
+
+  log_success "Schematic created: $schematic_id"
+  echo "$schematic_id"
+}
+
+# Download PXE boot assets (kernel, initramfs, cmdline) to a local directory.
+# Args:
+#   $1 - schematic ID
+#   $2 - Talos version (e.g. v1.12.4)
+#   $3 - output directory
+download_pxe_assets() {
+  local schematic_id="$1"
+  local talos_version="$2"
+  local output_dir="$3"
+
+  local version_dir="${output_dir}/${talos_version}"
+  mkdir -p "$version_dir"
+
+  local base_url="${FACTORY_BASE_URL}/image/${schematic_id}/${talos_version}"
+
+  local assets=("kernel-amd64" "initramfs-amd64.xz" "cmdline-metal-amd64")
+
+  for asset in "${assets[@]}"; do
+    local target="${version_dir}/${asset}"
+    if [[ -f "$target" && -s "$target" ]]; then
+      log_info "Asset already cached: $asset"
+      continue
+    fi
+
+    log_info "Downloading ${asset}..."
+    if ! curl -sSfL -o "$target" "${base_url}/${asset}"; then
+      log_error "Failed to download ${asset} from ${base_url}/${asset}"
+      rm -f "$target"
+      return 1
+    fi
+    log_success "Downloaded: $asset ($(du -h "$target" | cut -f1))"
+  done
+
+  log_success "All PXE assets downloaded to $version_dir"
+}
+
+# Clean up old versioned asset directories, keeping only the current version.
+# Args:
+#   $1 - assets base directory
+#   $2 - current version to keep (e.g. v1.12.4)
+cleanup_old_assets() {
+  local assets_dir="$1"
+  local current_version="$2"
+
+  if [[ ! -d "$assets_dir" ]]; then
+    return 0
+  fi
+
+  local cleaned=0
+  for dir in "$assets_dir"/v*/; do
+    [[ -d "$dir" ]] || continue
+    local dir_name
+    dir_name=$(basename "$dir")
+    if [[ "$dir_name" != "$current_version" ]]; then
+      log_info "Cleaning up old assets: $dir_name"
+      rm -rf "$dir"
+      ((cleaned++))
+    fi
+  done
+
+  if [[ $cleaned -gt 0 ]]; then
+    log_info "Cleaned up $cleaned old asset version(s)"
+  fi
+}
+
+# Generate the iPXE boot script from a template.
+# Args:
+#   $1 - template file path
+#   $2 - output file path
+#   $3 - PXE server base URL (e.g. http://192.168.120.10:8080)
+#   $4 - Talos version (e.g. v1.12.4)
+generate_ipxe_script() {
+  local template="$1"
+  local output="$2"
+  local pxe_server_url="$3"
+  local talos_version="$4"
+
+  PXE_SERVER_URL="$pxe_server_url" PXE_TALOS_VERSION="$talos_version" \
+    envsubst '${PXE_SERVER_URL} ${PXE_TALOS_VERSION}' < "$template" > "$output"
+
+  log_success "Generated iPXE boot script: $output"
+}
+
+# Build custom iPXE UEFI firmware with an embedded chainload script.
+# The embedded script hardcodes the HTTP boot URL, avoiding DHCP boot-loop
+# issues when using manual DHCP options (option 66+67) on a router.
+# Caches the build and only rebuilds when the embed script changes.
+# Args:
+#   $1 - PXE server URL (e.g. http://10.117.5.18)
+#   $2 - output directory for firmware files
+#   $3 - PXE directory (contains Dockerfile.ipxe)
+build_ipxe_firmware() {
+  local pxe_server_url="$1"
+  local output_dir="$2"
+  local pxe_dir="$3"
+
+  mkdir -p "$output_dir"
+
+  # Generate the embedded iPXE script
+  local embed_script="${pxe_dir}/embed.ipxe"
+  cat > "$embed_script" <<EOF
+#!ipxe
+:retry
+dhcp
+chain ${pxe_server_url}/ipxe-boot.ipxe && exit
+echo Chainload failed, retrying in 5 seconds...
+sleep 5
+goto retry
+EOF
+
+  # Check if firmware needs rebuilding (compare embed script hash)
+  local hash_file="${output_dir}/.embed-hash"
+  local current_hash
+  current_hash=$(shasum -a 256 "$embed_script" | cut -d' ' -f1)
+
+  if [[ -f "$hash_file" && -f "${output_dir}/ipxe.efi" ]]; then
+    local cached_hash
+    cached_hash=$(cat "$hash_file")
+    if [[ "$cached_hash" == "$current_hash" ]]; then
+      log_info "iPXE firmware is up to date (cached)"
+      return 0
+    fi
+  fi
+
+  log_info "Building iPXE UEFI firmware with embedded chainload script..."
+  log_info "  Chainload URL: ${pxe_server_url}/ipxe-boot.ipxe"
+  log_info "  First build is slow (~7min on Apple Silicon); subsequent builds only re-link (~10s)..."
+
+  if ! docker buildx build \
+    --platform linux/amd64 \
+    -f "${pxe_dir}/Dockerfile.ipxe" \
+    --output "type=local,dest=${output_dir}" \
+    "${pxe_dir}"; then
+    log_error "iPXE firmware build failed"
+    return 1
+  fi
+
+  # Save hash for cache validation
+  echo "$current_hash" > "$hash_file"
+
+  log_success "Built iPXE firmware: ipxe.efi (UEFI)"
+}

@@ -144,7 +144,7 @@ approve_node_csrs() {
     
     # Normalize expected nodes to just hostname (strip domain if present)
     local expected_hostnames=()
-    for node in "${expected_nodes[@]}"; do
+    for node in ${expected_nodes[@]+"${expected_nodes[@]}"}; do
         # Extract hostname (everything before first dot)
         local hostname="${node%%.*}"
         expected_hostnames+=("$hostname")

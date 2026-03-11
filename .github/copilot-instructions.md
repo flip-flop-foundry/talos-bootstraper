@@ -20,6 +20,7 @@ overlays/                # Cluster-specific .env files + optional YAML overrides
 rendered/                # OUTPUT (gitignored) — final manifests after envsubst + yq merge
 adminTasks/              # Bootstrap and rendering scripts
   lib/                   # Shared shell libraries (logging, k8s helpers, API clients)
+  pxe/                   # iPXE network boot infrastructure (Docker-based)
 ```
 
 ### Base Components (base/)
@@ -115,13 +116,14 @@ Each cluster has one `.env` file exporting all configuration. Key variable group
 
 | Group | Example Variables |
 |-------|-------------------|
-| Talos | `OVERLAY_NAME`, `CLUSTER_EXTERNAL_DOMAIN`, `POD_CIDR`, `SERVICE_CIDR`, `KUBERNETES_VERSION`, `TALOS_CONTROL_NODES`, `TALOS_WORKER_NODES` |
+| Talos | `OVERLAY_NAME`, `CLUSTER_EXTERNAL_DOMAIN`, `POD_CIDR`, `SERVICE_CIDR`, `KUBERNETES_VERSION`, `TALOS_CONTROL_NODES`, `TALOS_WORKER_NODES`, `TALOS_INSTALL_VERSION`, `TALOS_INSTALLER_TYPE`, `TALOS_SCHEMATIC_EXTENSIONS`, `TALOS_SCHEMATIC_EXTRA_KERNEL_ARGS` |
 | Helm versions | `CILIUM_HELM_VERSION`, `TRAEFIK_HELM_VERSION`, `ARGOCD_HELM_VERSION`, `CERT_MGR_HELM_VERSION`, `LONGHORN_CHART_VERSION`, `CNPG_HELM_VERSION`, `EXTERNAL_DNS_HELM_VERSION`, `METRICS_SERVER_HELM_VERSION`, `RELOADER_HELM_VERSION`, `GITEA_HELM_VERSION` |
 | Networking | `CILIUM_LB_IP_CIDR` (LoadBalancer IP pool), `CILIUM_BGP_LOCAL_ASN`, `CILIUM_BGP_PEER_ASN`, `CILIUM_BGP_PEER_ADDRESS` (BGP only) |
 | Storage | `LONGHORN_BACKUP_TARGET`, `LONGHORN_BACKUP_CRON_SCHEDULE`, `LONGHORN_BACKUP_RETAIN` |
 | DNS | `EXTERNAL_DNS_BINDSERVER_IP`, `EXTERNAL_DNS_TSIG_KEYNAME`, `EXTERNAL_DNS_DOMAIN_FILTERS` |
 | Gitea | `GITEA_DOMAIN_NAME`, `GITEA_CLUSTER_SERVICES_REPO_URL`, `GITEA_HELM_VERSION` |
 | ArgoCD | `ARGOCD_DOMAIN`, `ARGOCD_HELM_VERSION` |
+| PXE Boot | `TALOS_PXE_ENABLED`, `TALOS_PXE_SERVER_IP`, `TALOS_PXE_SERVER_PORT`, `TALOS_PXE_PROXY_DHCP_ENABLED`, `TALOS_PXE_DHCP_RANGE` |
 | Exclusions | `EXCLUDED_BASE` array — skip components or files from rendering |
 
 ## Key Scripts Reference
@@ -137,6 +139,8 @@ Each cluster has one `.env` file exporting all configuration. Key variable group
 | `adminTasks/lib/gitea-api.sh` | Gitea REST API operations |
 | `adminTasks/lib/argocd-api.sh` | ArgoCD pod access and login |
 | `adminTasks/lib/disk-detection.sh` | Longhorn disk auto-discovery |
+| `adminTasks/pxe-setup.sh` | iPXE network boot setup: schematic, assets, firmware, Docker |
+| `adminTasks/lib/image-factory.sh` | Talos Image Factory API: schematics, asset downloads, iPXE build |
 
 ## Helm Charts & Repos
 
@@ -190,6 +194,40 @@ Advertises LoadBalancer IPs via eBGP to an external router. IPs can be any routa
 - Mode selection is purely which Cilium CRDs get rendered, controlled by `EXCLUDED_BASE`
 
 See `overlays/yourCluster-l2/` and `overlays/yourCluster-bgp/` for complete examples.
+
+## iPXE Network Boot
+
+Optional PXE boot infrastructure for automated Talos OS installation on bare metal nodes.
+
+**Setup**: `./adminTasks/pxe-setup.sh overlays/<cluster>/<cluster>.env`
+
+This creates a Talos Image Factory schematic, downloads kernel/initramfs assets, generates boot scripts, and starts Docker containers for serving the boot environment.
+
+### Two Modes
+
+| Mode | When to Use | How It Works |
+|------|-------------|-------------|
+| **Manual DHCP** (`TALOS_PXE_PROXY_DHCP_ENABLED=false`) | PXE server on different subnet from nodes, or router supports DHCP options | Builds custom iPXE firmware with embedded chainload script. Router DHCP options 66 (next-server) + 67 (boot file) point to TFTP server. TFTP serves `ipxe.efi` → chains to HTTP boot script → loads kernel + initramfs |
+| **ProxyDHCP** (`TALOS_PXE_PROXY_DHCP_ENABLED=true`) | PXE server on same subnet as nodes, no router config needed | dnsmasq runs as proxyDHCP alongside existing DHCP. Broadcasts boot info (next-server + boot script URL) without assigning IPs |
+
+### PXE Infrastructure (`adminTasks/pxe/`)
+
+```
+pxe/
+  docker-compose.yml       # 3 services: pxe-server (nginx), dnsmasq (proxyDHCP), tftp
+  Dockerfile.ipxe          # Two-stage cached iPXE UEFI firmware build
+  dnsmasq.conf.template    # proxyDHCP config template
+  ipxe-boot.ipxe.template  # Boot script template (kernel + initramfs URLs)
+  nginx.conf               # Static file server config
+  .gitignore               # Excludes assets/, dnsmasq.conf, tftp/, embed.ipxe
+```
+
+### Key Implementation Details
+
+- **Image Factory API** returns HTTP 302 redirects to S3-signed URLs — `curl -L` is required
+- **TFTP in Docker** requires `--tftp-single-port` flag because Docker UDP NAT only forwards the initial port (69), not ephemeral response ports
+- **poseidon/dnsmasq** (`quay.io/poseidon/dnsmasq:v0.5.0`) needs `-k` flag for foreground mode in Docker
+- **iPXE build** uses two-stage Docker build: stage 1 caches full compilation, stage 2 only re-links with new embedded script (~10s)
 
 ## How to Add a New Cluster
 

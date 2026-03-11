@@ -143,6 +143,7 @@ EOF
 
     # Add encryption if KMS endpoint is provided
     if [ -n "$kms_endpoint" ]; then
+
         cat <<EOF
 encryption:
   provider: luks2

@@ -58,11 +58,20 @@ source "$SCRIPT_DIR/lib/disk-detection.sh" || { log_error "Failed to load disk-d
 # shellcheck source=./lib/kubernetes.sh
 source "$SCRIPT_DIR/lib/kubernetes.sh" || { log_error "Failed to load kubernetes.sh"; exit 1; }
 
+# Load image factory library (for PXE boot)
+# shellcheck source=./lib/image-factory.sh
+source "$SCRIPT_DIR/lib/image-factory.sh" || { log_error "Failed to load image-factory.sh"; exit 1; }
+
+# Load talos utilities library
+# shellcheck source=./lib/talos.sh
+source "$SCRIPT_DIR/lib/talos.sh" || { log_error "Failed to load talos.sh"; exit 1; }
+
 export OVERLAY_DIR="$(cd "$(dirname "$CONFIG_FILE")" && pwd)"
 export BASE_DIR="$(cd "$OVERLAY_DIR/../../base" && pwd)"
 export RENDERED_DIR="$(cd "$OVERLAY_DIR/../.." && pwd)/rendered/$OVERLAY_NAME"
 export NR_OF_CONTROL_NODES=${#TALOS_CONTROL_NODES[@]}
 export TALOSCONFIG="$OVERLAY_DIR/talos/talosconfig"
+
 
 log_info "Using Script Directory:  $SCRIPT_DIR"
 log_info "Using Base Directory: $BASE_DIR"
@@ -72,31 +81,132 @@ log_info "Using Talos config file: $TALOSCONFIG"
 
 cd "$OVERLAY_DIR" || exit 1
 
-if [ -z "$TALOS_INSTALL_IMAGE" ] || [ -z "$POD_CIDR" ] || [ -z "$SERVICE_CIDR" ]; then
-  log_error "TALOS_INSTALL_IMAGE, POD_CIDR, and SERVICE_CIDR must be set in the config file."
+if [ -z "${TALOS_INSTALL_VERSION:-}" ] || [ -z "${TALOS_INSTALLER_TYPE:-}" ] || [ -z "$POD_CIDR" ] || [ -z "$SERVICE_CIDR" ]; then
+  log_error "TALOS_INSTALL_VERSION, TALOS_INSTALLER_TYPE, POD_CIDR, and SERVICE_CIDR must be set in the config file."
   exit 3
 fi
+
+# ============================================================================
+# DERIVE INSTALL IMAGE FROM IMAGE FACTORY SCHEMATIC
+# ============================================================================
+
+log_info "Creating Image Factory schematic to derive install image..."
+SCHEMATIC_ID=$(create_schematic)
+
+if [[ -z "$SCHEMATIC_ID" ]]; then
+  log_error "Failed to create Image Factory schematic."
+  exit 3
+fi
+
+export TALOS_INSTALL_IMAGE="factory.talos.dev/${TALOS_INSTALLER_TYPE}/${SCHEMATIC_ID}:${TALOS_INSTALL_VERSION}"
+log_success "Install image: $TALOS_INSTALL_IMAGE"
 
 # ============================================================================
 # NODE RESET (IF ENABLED)
 # ============================================================================
 
 # Reset nodes if TALOS_RESET_NODES is true
-if [ -f "$TALOSCONFIG" ]; then
-  # Loop over control nodes for Talos operations
-  for NODE in "${TALOS_CONTROL_NODES[@]}"; do
-    
-    if [ "$TALOS_RESET_NODES" = "true" ]; then
-    log_info "Checking if node \"$NODE\" is in maintenance mode..."
-      if ! talosctl apply-config --insecure --nodes "$NODE" --file "$OVERLAY_DIR/talos/controlplane.yaml" --dry-run 2>&1 | grep -qi "Node is running in maintenance mode"; then
-          log_warn "Node $NODE is not in maintenance mode, resetting..."
-          talosctl reset --graceful=false --reboot -n "$NODE" --endpoints "$NODE"
-      else
-          log_success "Node $NODE is already in maintenance mode, no need to reset."
-      fi
-    fi
+if [[ "${TALOS_RESET_NODES:-false}" == "true" ]]; then
+  RESET_NODES=("${TALOS_CONTROL_NODES[@]}" ${TALOS_WORKER_NODES[@]+"${TALOS_WORKER_NODES[@]}"})
+  log_info "TALOS_RESET_NODES is true. Checking ${#RESET_NODES[@]} node(s) for reset..."
 
+  for NODE in "${RESET_NODES[@]}"; do
+    reset_talos_node "$NODE" "$TALOSCONFIG"
   done
+
+  # Give nodes time to start resetting before probing them
+  log_info "Waiting 10s for nodes to begin resetting..."
+  sleep 10
+fi
+
+# ============================================================================
+# PXE BOOT: ENSURE NODES ARE EITHER IN MAINTENANCE MODE OR ALREADY BOOTSTRAPPED BEFORE PROCEEDING
+# ============================================================================
+
+if [[ "${TALOS_PXE_ENABLED:-false}" == "true" ]]; then
+  log_info "PXE boot is enabled. Checking node status before starting PXE server..."
+
+  ALL_NODES=("${TALOS_CONTROL_NODES[@]}" ${TALOS_WORKER_NODES[@]+"${TALOS_WORKER_NODES[@]}"})
+  NODES_READY=()
+  NODES_NEED_PXE=()
+
+  # Pre-check: probe each node to see if it's already reachable (maintenance, booting, or running)
+  # This allows re-running the script without blocking on PXE boot for already-deployed nodes
+  for NODE in "${ALL_NODES[@]}"; do
+    set +e
+    # Try with talosconfig first (works for bootstrapped nodes), fall back to --insecure (maintenance mode)
+    STATUS=$(talosctl get machinestatus --nodes "$NODE" --endpoints "$NODE" 2>&1)
+    if [[ $? -ne 0 ]]; then
+      STATUS=$(talosctl get machinestatus --nodes "$NODE" --endpoints "$NODE" --insecure 2>&1)
+    fi
+    set -e
+
+    if echo "$STATUS" | grep -qi "maintenance\|booting\|running"; then
+      log_success "Node $NODE is already reachable (skipping PXE boot)."
+      NODES_READY+=("$NODE")
+    else
+      NODES_NEED_PXE+=("$NODE")
+    fi
+  done
+
+  if [[ ${#NODES_NEED_PXE[@]} -eq 0 ]]; then
+    log_success "All ${#ALL_NODES[@]} nodes are already reachable. Skipping PXE boot."
+  else
+    log_info "${#NODES_NEED_PXE[@]} node(s) need PXE boot: ${NODES_NEED_PXE[*]}"
+    log_info "Starting PXE server..."
+    "$SCRIPT_DIR/pxe-setup.sh" "$CONFIG_FILE"
+
+    PXE_TIMEOUT=${PXE_BOOT_TIMEOUT:-600}
+    START_TIME=$(date +%s)
+
+    log_info "Waiting for ${#NODES_NEED_PXE[@]} node(s) to PXE boot into maintenance mode (timeout: ${PXE_TIMEOUT}s)..."
+
+    while [[ ${#NODES_READY[@]} -lt ${#ALL_NODES[@]} ]]; do
+      for NODE in "${NODES_NEED_PXE[@]}"; do
+        # Skip if already confirmed ready
+        if printf '%s\n' ${NODES_READY[@]+"${NODES_READY[@]}"} | grep -qxF "$NODE"; then
+          continue
+        fi
+
+        # Check if node is in maintenance mode by probing with talosctl
+        set +e
+        STATUS=$(talosctl get machinestatus --nodes "$NODE" --endpoints "$NODE" --insecure 2>&1)
+        set -e
+
+        if echo "$STATUS" | grep -qi "maintenance\|booting"; then
+          log_success "Node $NODE is in maintenance mode."
+          NODES_READY+=("$NODE")
+        fi
+      done
+
+      if [[ ${#NODES_READY[@]} -lt ${#ALL_NODES[@]} ]]; then
+        CURRENT_TIME=$(date +%s)
+        ELAPSED=$((CURRENT_TIME - START_TIME))
+        if [[ $ELAPSED -ge $PXE_TIMEOUT ]]; then
+          log_error "Timeout waiting for nodes to PXE boot after ${PXE_TIMEOUT}s."
+          log_error "Nodes not yet ready: $(comm -23 <(printf '%s\n' "${NODES_NEED_PXE[@]}" | sort) <(printf '%s\n' ${NODES_READY[@]+"${NODES_READY[@]}"} | sort) | tr '\n' ' ')"
+          exit 4
+        fi
+        REMAINING=$((${#ALL_NODES[@]} - ${#NODES_READY[@]}))
+        log_info "Waiting for $REMAINING more node(s)... (${ELAPSED}s elapsed)"
+        sleep 5
+      fi
+    done
+
+    log_success "All ${#ALL_NODES[@]} nodes are in maintenance mode."
+
+    # Stop and remove PXE server containers — no longer needed
+    log_info "Stopping PXE server containers..."
+    PXE_DIR="$SCRIPT_DIR/pxe"
+    PXE_COMPOSE_ARGS=(-f "$PXE_DIR/docker-compose.yml")
+    if [[ "${TALOS_PXE_PROXY_DHCP_ENABLED:-false}" == "true" ]]; then
+      PXE_COMPOSE_ARGS+=(--profile proxydhcp)
+    else
+      PXE_COMPOSE_ARGS+=(--profile tftp)
+    fi
+    docker compose "${PXE_COMPOSE_ARGS[@]}" down 2>/dev/null || true
+    log_success "PXE server containers stopped and removed."
+  fi
 fi
 
 # ============================================================================
@@ -177,14 +287,7 @@ rm "talos/talosPatchConfigControlplaneRendered.yaml"
 # TALOSCONFIG UPDATE
 # ============================================================================
 
-  log_info "Updating talosconfig context for $TALOS_CLUSTER_NAME"
-  talosctl config endpoint "$TALOS_CLUSTER_ENDPOINT" --talosconfig "$TALOSCONFIG"
-
-
-  # Patch the fact that talosctl is dumb about reciving a list of nodes
-  TALOS_CONTROL_NODES_CSV=$(IFS=','; echo "${TALOS_CONTROL_NODES[*]}")
-  export TALOS_CONTROL_NODES_CSV
-  yq -i ".contexts.$TALOS_CLUSTER_NAME.nodes = (env(TALOS_CONTROL_NODES_CSV) | split(\",\"))" "$TALOSCONFIG"
+  update_talosconfig_context "$TALOS_CLUSTER_NAME" "$TALOSCONFIG" "$TALOS_CLUSTER_ENDPOINT" "${TALOS_CONTROL_NODES[@]}"
 
 # ============================================================================
 # ADDITIONAL TRUSTED ROOT CAs
@@ -221,40 +324,25 @@ else
 fi
 
 # ============================================================================
-# DYNAMIC DISK DETECTION AND PER-NODE CONFIG GENERATION FOR CONTROL NODES
+# DYNAMIC DISK DETECTION AND PER-NODE CONFIG GENERATION
 # ============================================================================
 
-log_info "Generating per-node configs for control nodes (disk layouts may differ)..."
+log_info "Generating per-node configs for control plane nodes..."
 for NODE in "${TALOS_CONTROL_NODES[@]}"; do
-  NODE_HOSTNAME=$(echo "$NODE" | cut -d'.' -f1)  # Extract hostname from FQDN
+  NODE_HOSTNAME=$(echo "$NODE" | cut -d'.' -f1)
   NODE_CONFIG_FILE="$RENDERED_DIR/talos/controlplane-${NODE_HOSTNAME}.yaml"
-  
-  log_info "  Creating config for node $NODE -> $NODE_CONFIG_FILE"
-  
-  # Copy base controlplane.yaml to node-specific file
-  cp "$OVERLAY_DIR/talos/controlplane.yaml" "$NODE_CONFIG_FILE"
-  
-  # Detect and append disk configs for this specific node
-  log_info "  Detecting disks on node $NODE..."
-  DISK_CONFIGS=$(detect_node_disks "$NODE" "$TALOSCONFIG")
-
-  if [ -n "$DISK_CONFIGS" ]; then
-    log_info "  Additional disks detected on worker node $NODE, generating disk configs..."
-    generate_node_disk_configs "$NODE" "$NODE_CONFIG_FILE" "$TALOS_DISK_ENCRYPTION_KMS_URL" "$TALOSCONFIG"
-  else
-    log_info "    No additional disks found on $NODE (only system disk detected)"
-  fi
-
-  # Append any additional manifests specified in env file
-  if [[ ${#TALOS_APPEND_MANIFESTS_CONTROL_NODES[@]} -gt 0 ]]; then
-    for MANIFEST in "${TALOS_APPEND_MANIFESTS_CONTROL_NODES[@]}"; do
-      log_info "  Appending manifest $MANIFEST to $NODE_CONFIG_FILE"
-      echo "---" >> "$NODE_CONFIG_FILE"
-      envsubst < "$MANIFEST" >> "$NODE_CONFIG_FILE"
-      echo "" >> "$NODE_CONFIG_FILE"
-    done
-  fi
+  generate_node_config "$NODE" "$OVERLAY_DIR/talos/controlplane.yaml" "$NODE_CONFIG_FILE" \
+    ${TALOS_APPEND_MANIFESTS_CONTROL_NODES[@]+"${TALOS_APPEND_MANIFESTS_CONTROL_NODES[@]}"}
 done
+
+if [[ ${#TALOS_WORKER_NODES[@]} -gt 0 ]]; then
+  log_info "Generating per-node configs for worker nodes..."
+  for NODE in "${TALOS_WORKER_NODES[@]}"; do
+    NODE_HOSTNAME=$(echo "$NODE" | cut -d'.' -f1)
+    NODE_CONFIG_FILE="$RENDERED_DIR/talos/worker-${NODE_HOSTNAME}.yaml"
+    generate_node_config "$NODE" "$OVERLAY_DIR/talos/worker.yaml" "$NODE_CONFIG_FILE"
+  done
+fi
 
 
 
@@ -270,63 +358,12 @@ for NODE in "${TALOS_CONTROL_NODES[@]}"; do
   NODE_CONFIG_FILE="$RENDERED_DIR/talos/controlplane-${NODE_HOSTNAME}.yaml"
   
   log_info "Applying Talos config to controlplane node $NODE from $NODE_CONFIG_FILE..."
+  apply_talos_config "$NODE" "$NODE_CONFIG_FILE"
 
-  INSECURE=""
-  if ! talosctl get members --nodes "$NODE" &>/dev/null; then
-    INSECURE=" --insecure"
+  NODE_STATUS=$(wait_for_node_ready "$NODE" "${PREPARING_TIMEOUT:-300}") || exit 4
+  if [[ "$NODE_STATUS" == "booting" ]]; then
+    CLUSTER_ALREADY_BOOTSTRAPPED=false
   fi
-
-  # Add the node's FQDN to machine.certSANs (handles missing, empty, or existing list)
-  # Use select(di == 0) to only modify the first YAML document (main MachineConfig), not HostnameConfig/UserVolumeConfig etc.
-  NODE_FQDN="$NODE" yq -i '
-    (select(di == 0).machine.certSANs // []) as $existing |
-    select(di == 0).machine.certSANs = ($existing + [env(NODE_FQDN)] | unique)
-  ' "$NODE_CONFIG_FILE"
-
-  # Set the hostname in the HostnameConfig document to the node's FQDN and disable auto hostname
-  NODE_FQDN="$NODE" yq -i '
-    select(.kind == "HostnameConfig").hostname = env(NODE_FQDN) |
-    select(.kind == "HostnameConfig").auto = "off"
-  ' "$NODE_CONFIG_FILE"
-
-
-
-
-  talosctl apply-config${INSECURE} --nodes "$NODE" --file "$NODE_CONFIG_FILE" # Have tested applying to two nodes at once, but it seems to be more reliable to apply one at a time. Maybe testing with 3+ nodes would be a good idea.
-
-
-  # Wait for talosctl health to return [Preparing] for the first node
-  TIMEOUT_SECONDS=${PREPARING_TIMEOUT:-300}
-  START_TIME=$(date +%s)
-  log_info "Waiting for node health to return [Preparing] (timeout: $TIMEOUT_SECONDS seconds)..."
-  
-  while true; do
-
-    # Temporarily disable error exit to allow polling command to fail
-    set +e
-    set -x
-    HEALTH_STATUS=$(talosctl get machinestatus --nodes "$NODE" --endpoints "$NODE" 2>&1)
-    set -e
-    set +x
-
-    if echo "$HEALTH_STATUS" | grep -q "booting"; then
-      log_success "Node is up and running again, can continue with bootstrap."
-      CLUSTER_ALREADY_BOOTSTRAPPED=false
-      break
-    elif echo "$HEALTH_STATUS" | grep -q "running   true"; then
-      log_success "Node is up and running again, can continue with bootstrap."
-      break
-    else
-      log_info "Node health returned unexpected status, continuing to wait: $HEALTH_STATUS"
-    fi
-    CURRENT_TIME=$(date +%s)
-    ELAPSED=$((CURRENT_TIME - START_TIME))
-    if [ $ELAPSED -ge $TIMEOUT_SECONDS ]; then
-      log_error "Timeout waiting for node health to return [Preparing] after $TIMEOUT_SECONDS seconds."
-      exit 4
-    fi
-    sleep 2
-  done
 
 
 done
@@ -334,21 +371,7 @@ done
 # ============================================================================
 # FETCH KUBECONFIG
 # ============================================================================
-log_info "Fetching kubeconfig..."
-KUBECONFIG_RETRIES=5
-KUBECONFIG_RETRY_DELAY=5
-for attempt in $(seq 1 $KUBECONFIG_RETRIES); do
-  if talosctl kubeconfig --merge --force --nodes "${TALOS_CONTROL_NODES[0]}" ~/.kube/config; then
-    log_success "Kubeconfig fetched successfully."
-    break
-  elif [ $attempt -lt $KUBECONFIG_RETRIES ]; then
-    log_warn "Attempt $attempt failed, retrying in $KUBECONFIG_RETRY_DELAY seconds..."
-    sleep $KUBECONFIG_RETRY_DELAY
-  else
-    log_error "Failed to fetch kubeconfig after $KUBECONFIG_RETRIES attempts."
-    exit 6
-  fi
-done
+fetch_kubeconfig "${TALOS_CONTROL_NODES[0]}" || exit 6
 
 # ============================================================================
 # BOOTSTRAP CLUSTER
@@ -407,46 +430,36 @@ DEPLOY_STATUS=$?
 # ============================================================================
 
 if [ ${#TALOS_WORKER_NODES[@]} -gt 0 ]; then
-  log_info "Worker nodes configured, waiting for Cilium to be ready before deploying workers..."
+  log_info "Worker nodes configured, waiting for Cilium to be ready on control plane nodes before deploying workers..."
   
-  if kubectl rollout status daemonset/cilium -n kube-system --timeout=5m; then
-    log_success "Cilium is ready. Proceeding with worker node deployment..."
+  CILIUM_TIMEOUT=${CILIUM_READY_TIMEOUT:-300}
+  CILIUM_START=$(date +%s)
+  while true; do
+    READY_PODS=$(kubectl get daemonset/cilium -n kube-system -o jsonpath='{.status.numberReady}' 2>/dev/null || echo "0")
+    if [[ "$READY_PODS" -ge "$NR_OF_CONTROL_NODES" ]]; then
+      break
+    fi
+    CILIUM_ELAPSED=$(( $(date +%s) - CILIUM_START ))
+    if [[ $CILIUM_ELAPSED -ge $CILIUM_TIMEOUT ]]; then
+      log_error "Timeout waiting for Cilium (${READY_PODS}/${NR_OF_CONTROL_NODES} ready after ${CILIUM_TIMEOUT}s)."
+      DEPLOY_STATUS=6
+      break
+    fi
+    log_info "Cilium pods ready: ${READY_PODS}/${NR_OF_CONTROL_NODES} (${CILIUM_ELAPSED}s elapsed)"
+    sleep 5
+  done
+
+  if [[ "$READY_PODS" -ge "$NR_OF_CONTROL_NODES" ]]; then
+    log_success "Cilium is ready on all ${NR_OF_CONTROL_NODES} control plane nodes. Proceeding with worker node deployment..."
     
-    # Generate per-node configs for worker nodes
-    log_info "Generating per-node configs for worker nodes (disk layouts may differ)..."
-    for NODE in "${TALOS_WORKER_NODES[@]}"; do
-      NODE_HOSTNAME=$(echo "$NODE" | cut -d'.' -f1)
-      NODE_CONFIG_FILE="$RENDERED_DIR/talos/worker-${NODE_HOSTNAME}.yaml"
-      
-      log_info "  Creating config for worker node $NODE -> $NODE_CONFIG_FILE"
-      
-      # Copy base worker.yaml to node-specific file
-      cp "$OVERLAY_DIR/talos/worker.yaml" "$NODE_CONFIG_FILE"
-      
-      # Detect and append disk configs for this specific node
-      log_info "  Detecting disks on node $NODE..."
-      DISK_CONFIGS=$(detect_node_disks "$NODE" "'$TALOSCONFIG'")
-      
-      if [ -n "$DISK_CONFIGS" ]; then
-        log_info "  Additional disks detected on worker node $NODE, generating disk configs..."
-        generate_node_disk_configs "$NODE" "$NODE_CONFIG_FILE" "$TALOS_DISK_ENCRYPTION_KMS_URL" "$TALOSCONFIG"
-      else
-        log_info "    No additional disks found on $NODE (only system disk detected)"
-      fi
-    done
-    
-    # Apply worker configuration
+    # Apply worker configuration (configs were already generated earlier)
     log_info "Applying Talos config to worker nodes..."
     for NODE in "${TALOS_WORKER_NODES[@]}"; do
       NODE_HOSTNAME=$(echo "$NODE" | cut -d'.' -f1)
       NODE_CONFIG_FILE="$RENDERED_DIR/talos/worker-${NODE_HOSTNAME}.yaml"
       
       log_info "  Applying config to worker node $NODE from $NODE_CONFIG_FILE..."
-      INSECURE=""
-      if ! talosctl get members --nodes "$NODE" &>/dev/null; then
-        INSECURE=" --insecure"
-      fi
-      talosctl apply-config${INSECURE} --nodes "$NODE" --file "$NODE_CONFIG_FILE"
+      apply_talos_config "$NODE" "$NODE_CONFIG_FILE"
     done
     
     log_success "Worker nodes deployed successfully."
@@ -465,9 +478,13 @@ fi
 # CSR APPROVAL WATCHER AND DEPLOYMENT
 # ============================================================================
 
-log_info "Starting CSR approval for worker nodes..."
-# Approve node CSRs for all expected nodes (max_timeout: 300s, inter_node_timeout: 120s)
-approve_node_csrs 300 120 "${TALOS_WORKER_NODES[@]}"
+if [[ ${#TALOS_WORKER_NODES[@]} -gt 0 ]]; then
+  log_info "Starting CSR approval for worker nodes..."
+  # Approve node CSRs for all expected nodes (max_timeout: 300s, inter_node_timeout: 120s)
+  approve_node_csrs 300 120 "${TALOS_WORKER_NODES[@]}"
+else
+  log_info "No worker nodes configured, skipping worker CSR approval."
+fi
 
 # ============================================================================
 # CLEANUP
