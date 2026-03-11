@@ -323,7 +323,11 @@ spec:
               add: []            # Only add back what is strictly required
 ```
 
-> **Note**: `hostUsers: false` requires Kubernetes 1.25+ with the `UserNamespacesSupport` feature gate enabled (on by default from 1.30). Talos supports this. Check whether the upstream Helm chart has a values key for this — if not, use a post-renderer patch or document the gap.
+> **Note**: The cluster is assumed to support user namespaces. If the upstream Helm chart does not expose a values key for `hostUsers`, note it in a comment in the values file and set it manually in any raw YAML you control. Do **not** set up a post-renderer just for this.
+
+When writing Helm values for a new component:
+- **Always use the latest chart version** available at the time of writing. Set `export COMPONENT_HELM_VERSION="<latest>"` in every overlay `.env` file.
+- After writing the values, **render the final manifests** (`./adminTasks/render-overlay.sh`) and inspect every generated resource to confirm it meets the security guidelines above.
 
 #### Least-Privilege Service Accounts
 
@@ -331,44 +335,9 @@ spec:
 - Set `automountServiceAccountToken: false` on the `ServiceAccount` and on pods unless the workload explicitly needs Kubernetes API access.
 - Scope `ClusterRole` / `Role` bindings to the minimum required verbs and resources.
 
-#### Network Policies
-
-Add a `NetworkPolicy` for every new namespace that:
-1. Defaults to **deny all ingress and egress**.
-2. Explicitly allows only the traffic the workload needs (e.g. ingress from Traefik, egress to DNS, egress to the database).
-
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: <component>-default-deny
-  namespace: <namespace>
-spec:
-  podSelector: {}
-  policyTypes:
-    - Ingress
-    - Egress
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: <component>-allow-dns
-  namespace: <namespace>
-spec:
-  podSelector: {}
-  policyTypes:
-    - Egress
-  egress:
-    - ports:
-        - port: 53
-          protocol: UDP
-        - port: 53
-          protocol: TCP
-```
-
 #### Image Security
 
-- Use specific image tags (never `latest`). Pinning to a digest (`@sha256:...`) is ideal for production.
+- If the upstream Helm chart pins images to an explicit version tag, use that tag. If the chart references `latest` or no tag, research the actual latest stable release and pin the image to that specific version (e.g. `image.tag: "1.2.3"`). Never leave `latest` in place.
 - Prefer minimal/distroless base images where the upstream chart supports it.
 - Enable image pull policy `IfNotPresent` (default) for pinned tags.
 
@@ -429,7 +398,7 @@ Scale deployments conservatively. The cluster runs on small/medium bare-metal no
 | Background/lightweight | 10–50m | 200–500m | 32–64Mi | 128–256Mi |
 
 - Always set **both** `requests` and `limits`.
-- Set `replicas: 1` by default. Scale up only when HA is explicitly needed.
+- **Replicas**: If the Helm chart exposes a `replicas` value, research the impact of running the workload with 1 vs multiple replicas (availability, leader-election behaviour, resource cost) and explain the trade-off to the user before proceeding. Default to `replicas: 1` for stateful or leader-only workloads and document the reasoning.
 - Use `PriorityClass` — assign `cluster-services` priority class to infrastructure workloads.
 - Add `tolerations` for control-plane nodes if the workload needs to schedule there.
 
@@ -438,7 +407,7 @@ Scale deployments conservatively. The cluster runs on small/medium bare-metal no
 - **Health probes**: Always add `livenessProbe`, `readinessProbe`, and ideally `startupProbe`. Use `httpGet` over `exec` where possible.
 - **Pod Disruption Budgets**: Add a `PodDisruptionBudget` for any workload with `replicas >= 2`.
 - **Horizontal Pod Autoscaler**: Add an `HorizontalPodAutoscaler` for stateless workloads that may scale, setting conservative min/max replicas.
-- **Ingress via Traefik**: All HTTP/HTTPS workloads must use the cluster's Traefik ingress with a cert-manager annotation. Never expose services directly via `NodePort` or `LoadBalancer` unless there is a specific networking reason.
+- **Ingress via Traefik**: All workloads must be exposed over **HTTPS only** using the cluster's Traefik ingress with a cert-manager annotation. Never use plain HTTP. Never expose services directly via `NodePort` or `LoadBalancer` unless there is a specific networking reason.
 - **DNS via external-dns**: Annotate Ingress resources with `external-dns.alpha.kubernetes.io/hostname` so DNS records are automatically managed.
 - **Secret hygiene**: Store sensitive values in Kubernetes `Secret` objects. Never embed credentials in `ConfigMap`, Helm values files, or `.env` files committed to the repo.
 - **Reloader**: Annotate `Deployment`/`StatefulSet` resources with `reloader.stakater.com/auto: "true"` so they restart automatically when referenced `ConfigMap`/`Secret` objects change.
@@ -632,7 +601,7 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "50"  # Deploy late so CSI Snapshot CRDs are available
 spec:
-  schedule: "0 0 0 * * *"  # Daily at midnight
+  schedule: "0 0 22 * * *"  # Daily at 22:00 — choose a time between 22:00–06:00, offset by ±20 min from any other CNPG ScheduledBackup already in the project
   method: volumeSnapshot
   backupOwnerReference: cluster
   cluster:
