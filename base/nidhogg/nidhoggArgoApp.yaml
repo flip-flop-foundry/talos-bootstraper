@@ -11,10 +11,10 @@ metadata:
   name: nidhogg
   namespace: ${ARGOCD_NAMESPACE}
   annotations:
-    # Deploy in the same wave as Spegel (-45) so the taint controller is established
-    # at the same time. Nidhogg watches the Spegel DaemonSet and only removes its node
-    # taint once Spegel is ready, preventing other pods from scheduling on a new node
-    # before image caching is available.
+    # sync-wave only affects ordering within an ArgoCD app-of-apps sync; it has no effect
+    # when Applications are applied directly via kubectl (as in cluster-bootstrap.sh).
+    # Actual ordering is enforced by the Nidhogg taint mechanism: nodes are held with a
+    # NoSchedule taint until Spegel is ready, regardless of when this Application syncs.
     argocd.argoproj.io/sync-wave: "-45"
 spec:
   project: cluster-services

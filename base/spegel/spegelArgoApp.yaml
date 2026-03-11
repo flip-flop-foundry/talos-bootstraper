@@ -11,8 +11,10 @@ metadata:
   name: spegel
   namespace: ${ARGOCD_NAMESPACE}
   annotations:
-    # Deploy after Cilium (-50) but before all other workloads to ensure image caching
-    # is available before general pod scheduling begins on new nodes.
+    # sync-wave only affects ordering within an ArgoCD app-of-apps sync; it has no effect
+    # when Applications are applied directly via kubectl (as in cluster-bootstrap.sh).
+    # Actual early-node ordering is enforced by the system-node-critical PriorityClass
+    # and the Nidhogg taint, not this annotation.
     argocd.argoproj.io/sync-wave: "-45"
 spec:
   project: cluster-services
