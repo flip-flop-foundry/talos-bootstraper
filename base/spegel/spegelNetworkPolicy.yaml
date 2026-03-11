@@ -1,0 +1,45 @@
+# CiliumNetworkPolicy: restrict Spegel registry access to cluster nodes only.
+#
+# Spegel exposes a registry port (5000/hostPort 30020) and router port (5001)
+# that must only be reachable from other cluster nodes (containerd pulling images)
+# and pods within the cluster. External hosts should never be able to reach these ports.
+#
+# Using fromEntities: cluster covers all cluster nodes and pods (including the local node),
+# which is exactly the set of principals that legitimately need to talk to Spegel.
+#
+# The metrics port (9090) is cluster-internal only — no external scraping.
+# The cleanup probe port (8080) is cluster-internal only.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: spegel-registry-access
+  namespace: ${SPEGEL_NAMESPACE}
+spec:
+  # Apply to all Spegel DaemonSet pods
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: spegel
+  ingress:
+    # Allow registry (5000), hostPort mirror traffic is forwarded here by the kernel.
+    # Allow router (5001 TCP/UDP) for peer-to-peer content routing between Spegel instances.
+    # Allow metrics (9090) and cleanup probe (8080) from within the cluster.
+    - fromEntities:
+        - cluster
+      toPorts:
+        - ports:
+            - port: "5000"
+              protocol: TCP
+            - port: "5001"
+              protocol: TCP
+            - port: "5001"
+              protocol: UDP
+            - port: "9090"
+              protocol: TCP
+            - port: "8080"
+              protocol: TCP
+  egress:
+    # Allow Spegel to reach external registries (to fetch images on cache miss) and
+    # cluster-internal DNS + API server.
+    - toEntities:
+        - world
+        - cluster
