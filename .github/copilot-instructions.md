@@ -247,6 +247,411 @@ pxe/
 5. Optional: Add overlay-specific overrides in `overlays/<cluster>/<component>/`
 6. Re-render: `./adminTasks/render-overlay.sh overlays/<cluster>/<cluster>.env`
 
+## Workload Deployment Standards
+
+These standards apply whenever adding new workloads or components to the cluster.
+
+### ArgoCD — Everything as Applications
+
+**Every workload must be deployed as an ArgoCD `Application`**, never as raw `kubectl apply` manifests (except for objects that explicitly need `initial-deploy-with-kubectl: "true"` during bootstrap).
+
+#### Choosing the Right ArgoCD Project
+
+| Project | When to Use | Capabilities |
+|---------|-------------|--------------|
+| `cluster-services` | Cluster-wide infrastructure (networking, storage, monitoring, ingress, databases, CI/CD) | Can deploy CRDs, Namespaces, ClusterRoles, PriorityClasses, and resources in any namespace |
+| `default` | Normal application workloads that are not cluster infrastructure | Restricted from system namespaces; cannot deploy cluster-scoped resources |
+
+Use `cluster-services` for: Cilium, cert-manager, Traefik, Longhorn, CNPG, ArgoCD itself, Gitea, external-dns, monitoring stacks, etc.
+
+Use `default` for: user-facing applications, services that don't need cluster-wide access.
+
+#### Keeping `argocdProjects.yaml` Up To Date
+
+Whenever a new component introduces a **new namespace**, update `base/argocd/argocdProjects.yaml`:
+
+1. Add the namespace to `cluster-services.spec.sourceNamespaces` (allows ArgoCD apps in that namespace to be sources for other apps).
+2. Add a `- namespace: "!<new-namespace>"` entry to `default.spec.destinations` (blocks the `default` project from deploying into cluster infrastructure namespaces).
+3. Use `${VAR}` placeholders if the namespace is configurable.
+
+Example — adding a new `monitoring` namespace:
+```yaml
+# In cluster-services.spec.sourceNamespaces:
+- "monitoring"
+
+# In default.spec.destinations:
+- namespace: "!monitoring"
+  server: '*'
+```
+
+### Helm over Raw Manifests
+
+**Prefer Helm charts over raw Kubernetes YAML** for all deployments:
+- Use the existing [multi-source ArgoCD pattern](#multi-source-applications): one Helm chart source + one Git values source.
+- If no Helm chart exists for a workload, use Kustomize or plain YAML as a last resort, but document why.
+- Pin chart versions via env var: `export COMPONENT_HELM_VERSION="x.y.z"` in every overlay `.env` file.
+- Store Helm value overrides in `base/<component>/<component>HelmValues.yaml` using `${VAR}` placeholders.
+
+### Security Best Practices
+
+Apply the following to every new workload. Where a Helm chart does not support a setting, note it in a comment.
+
+#### Pod and Container Security
+
+```yaml
+# Always set on Deployments/StatefulSets/DaemonSets
+spec:
+  template:
+    spec:
+      hostUsers: false          # Use user namespace isolation (Kubernetes 1.25+)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534        # Use a high non-root UID (e.g. nobody)
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault  # Enable seccomp filtering
+      automountServiceAccountToken: false  # Disable unless the workload needs it
+      containers:
+        - name: app
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true  # Mount a tmpfs for writable dirs if needed
+            capabilities:
+              drop:
+                - ALL            # Drop all Linux capabilities
+              add: []            # Only add back what is strictly required
+```
+
+> **Note**: `hostUsers: false` requires Kubernetes 1.25+ with the `UserNamespacesSupport` feature gate enabled (on by default from 1.30). Talos supports this. Check whether the upstream Helm chart has a values key for this — if not, use a post-renderer patch or document the gap.
+
+#### Least-Privilege Service Accounts
+
+- Create a dedicated `ServiceAccount` per workload. Do not share service accounts across components.
+- Set `automountServiceAccountToken: false` on the `ServiceAccount` and on pods unless the workload explicitly needs Kubernetes API access.
+- Scope `ClusterRole` / `Role` bindings to the minimum required verbs and resources.
+
+#### Network Policies
+
+Add a `NetworkPolicy` for every new namespace that:
+1. Defaults to **deny all ingress and egress**.
+2. Explicitly allows only the traffic the workload needs (e.g. ingress from Traefik, egress to DNS, egress to the database).
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: <component>-default-deny
+  namespace: <namespace>
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: <component>-allow-dns
+  namespace: <namespace>
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+```
+
+#### Image Security
+
+- Use specific image tags (never `latest`). Pinning to a digest (`@sha256:...`) is ideal for production.
+- Prefer minimal/distroless base images where the upstream chart supports it.
+- Enable image pull policy `IfNotPresent` (default) for pinned tags.
+
+### mTLS
+
+**Enable mTLS wherever the application stack supports it.** Cilium provides transparent mTLS via WireGuard node-to-node encryption, but application-level mTLS offers stronger identity guarantees.
+
+- For CNPG databases: always configure mTLS (see [CNPG Database Cluster Pattern](#cnpg-database-cluster-pattern)).
+- For internal gRPC/HTTP services: consider Cilium's `CiliumNetworkPolicy` with mutual authentication, or sidecar-based mTLS if a service mesh is deployed.
+- Document the mTLS approach (cert-manager, CNPG-native, or mesh) in a comment near the relevant resource.
+
+### Certificates — Use cert-manager ClusterIssuer
+
+**All TLS certificates must be issued by cert-manager using the cluster's `ClusterIssuer`**, not self-signed ad-hoc certs.
+
+The cluster CA issuer is: `${TALOS_CLUSTER_NAME}-ca-issuer` (kind: `ClusterIssuer`)
+
+Standard patterns:
+
+```yaml
+# Ingress — annotation-driven (preferred)
+annotations:
+  cert-manager.io/cluster-issuer: ${TALOS_CLUSTER_NAME}-ca-issuer
+  cert-manager.io/common-name: service.${CLUSTER_EXTERNAL_DOMAIN}
+
+# Explicit Certificate resource (for non-ingress TLS, e.g. database server certs)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: <component>-server-cert
+spec:
+  secretName: <component>-server-cert
+  usages:
+    - server auth
+  dnsNames:
+    - <service>.<namespace>
+    - <service>.<namespace>.svc
+    - <service>.<namespace>.svc.cluster.local
+  issuerRef:
+    name: ${TALOS_CLUSTER_NAME}-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+  secretTemplate:
+    labels:
+      cnpg.io/reload: ""  # Add reload labels as needed by the consuming component
+```
+
+Always add the `cnpg.io/reload: ""` label (or equivalent) so that cert rotation is handled automatically by the consuming component's reload controller.
+
+### Resource Sizing — Small to Medium Clusters
+
+Scale deployments conservatively. The cluster runs on small/medium bare-metal nodes:
+
+| Tier | CPU Request | CPU Limit | Memory Request | Memory Limit |
+|------|-------------|-----------|----------------|--------------|
+| Critical infra (Cilium, ArgoCD) | 100–200m | 1000–2000m | 128–256Mi | 512Mi–1Gi |
+| Standard services (Gitea, Traefik) | 100–500m | 1000–2000m | 128–512Mi | 512Mi–1Gi |
+| Background/lightweight | 10–50m | 200–500m | 32–64Mi | 128–256Mi |
+
+- Always set **both** `requests` and `limits`.
+- Set `replicas: 1` by default. Scale up only when HA is explicitly needed.
+- Use `PriorityClass` — assign `cluster-services` priority class to infrastructure workloads.
+- Add `tolerations` for control-plane nodes if the workload needs to schedule there.
+
+### Additional Best Practices
+
+- **Health probes**: Always add `livenessProbe`, `readinessProbe`, and ideally `startupProbe`. Use `httpGet` over `exec` where possible.
+- **Pod Disruption Budgets**: Add a `PodDisruptionBudget` for any workload with `replicas >= 2`.
+- **Horizontal Pod Autoscaler**: Add an `HorizontalPodAutoscaler` for stateless workloads that may scale, setting conservative min/max replicas.
+- **Ingress via Traefik**: All HTTP/HTTPS workloads must use the cluster's Traefik ingress with a cert-manager annotation. Never expose services directly via `NodePort` or `LoadBalancer` unless there is a specific networking reason.
+- **DNS via external-dns**: Annotate Ingress resources with `external-dns.alpha.kubernetes.io/hostname` so DNS records are automatically managed.
+- **Secret hygiene**: Store sensitive values in Kubernetes `Secret` objects. Never embed credentials in `ConfigMap`, Helm values files, or `.env` files committed to the repo.
+- **Reloader**: Annotate `Deployment`/`StatefulSet` resources with `reloader.stakater.com/auto: "true"` so they restart automatically when referenced `ConfigMap`/`Secret` objects change.
+
+---
+
+## CNPG Database Cluster Pattern
+
+Use this pattern whenever a new PostgreSQL database is needed. CNPG (CloudNativePG) is the cluster's standard database operator.
+
+### Overview
+
+CNPG clusters should:
+- Use cert-manager certificates for both server TLS and client mTLS
+- Enforce `hostssl` with `clientcert=verify-full` (mTLS) in `pg_hba`
+- Have scheduled VolumeSnapshot backups
+- Use the cluster's Longhorn snapshot storage class
+- Set resource requests/limits appropriate for the workload
+
+### Required Files
+
+For a new CNPG cluster named `<app>-sql`:
+
+| File | Purpose |
+|------|---------|
+| `<component>CnpgCluster.yaml` | The `Cluster`, `ScheduledBackup`, cert-manager `Certificate`/`Issuer` resources |
+| `<component>CnpgArgoApp.yaml` | ArgoCD `Application` that deploys the cluster (project: `cluster-services`) |
+
+### Certificate Setup
+
+CNPG requires three certificate types. Use the following pattern:
+
+```yaml
+# 1. Server TLS cert (issued by cluster CA)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: <app>-sql-server-cert
+spec:
+  secretName: <app>-sql-server-cert
+  usages:
+    - server auth
+  dnsNames:
+    - <app>-sql-rw
+    - <app>-sql-rw.<namespace>
+    - <app>-sql-rw.<namespace>.svc
+    - <app>-sql-r
+    - <app>-sql-r.<namespace>
+    - <app>-sql-r.<namespace>.svc
+    - <app>-sql-ro
+    - <app>-sql-ro.<namespace>
+    - <app>-sql-ro.<namespace>.svc
+  issuerRef:
+    name: ${TALOS_CLUSTER_NAME}-ca-issuer
+    kind: ClusterIssuer
+    group: cert-manager.io
+  secretTemplate:
+    labels:
+      cnpg.io/reload: ""
+---
+# 2. Client CA (self-signed, because CNPG manages its own client cert chain)
+#    Note: CNPG cannot use the cluster CA for client certs due to how it validates
+#    client identity. A dedicated self-signed CA is required.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: <app>-cnpg-selfsigned-issuer
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: <app>-cnpg-client-ca
+spec:
+  isCA: true
+  commonName: <app>-cnpg-client-ca
+  secretName: <app>-cnpg-client-ca-key-pair
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: <app>-cnpg-selfsigned-issuer
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: <app>-cnpg-client-ca-issuer
+spec:
+  ca:
+    secretName: <app>-cnpg-client-ca-key-pair
+---
+# 3. Application client cert (issued by the client CA above)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: <app>-cnpg-client-cert
+spec:
+  secretName: <app>-cnpg-client-cert
+  usages:
+    - client auth
+  commonName: ${APP_PSQL_USERNAME}
+  issuerRef:
+    name: <app>-cnpg-client-ca-issuer
+    kind: Issuer
+    group: cert-manager.io
+---
+# 4. Streaming replica cert (issued by the client CA)
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: <app>-cnpg-streaming-replica-cert
+spec:
+  secretName: <app>-cnpg-streaming-replica-cert
+  usages:
+    - client auth
+  commonName: streaming_replica
+  issuerRef:
+    name: <app>-cnpg-client-ca-issuer
+    kind: Issuer
+    group: cert-manager.io
+```
+
+> **Important**: The `clientCASecret` in the CNPG `Cluster` spec must reference the **CA secret** (`<app>-cnpg-client-ca-key-pair`), not the client leaf certificate. The CA secret is what CNPG uses to verify incoming client certs.
+
+### Cluster Spec
+
+```yaml
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: <app>-sql
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"  # Deploy after certificates (sync wave 1)
+spec:
+  instances: 2          # Minimum for HA; use 3+ for zero-downtime failover
+  imageName: ghcr.io/cloudnative-pg/postgresql:${APP_PSQL_VERSION}
+
+  # Resource sizing (adjust per workload)
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "100m"
+    limits:
+      memory: "1Gi"
+      cpu: "1000m"
+
+  storage:
+    size: ${APP_PSQL_SIZE}
+    storageClass: pvckey-2replica-retained-backedup-ssd-cp
+
+  backup:
+    volumeSnapshot:
+      className: longhorn-snapshot
+      snapshotOwnerReference: backup
+
+  certificates:
+    serverTLSSecret: <app>-sql-server-cert
+    serverCASecret: <app>-sql-server-cert
+    clientCASecret: <app>-cnpg-client-ca-key-pair    # Must be the CA secret, not leaf cert
+    replicationTLSSecret: <app>-cnpg-streaming-replica-cert
+
+  # Enable monitoring (if Prometheus is deployed)
+  # monitoring:
+  #   enablePodMonitor: true
+
+  affinity:
+    tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+
+  postgresql:
+    pg_hba:
+      - hostssl app ${APP_PSQL_USERNAME} all scram-sha-256 clientcert=verify-full
+      # Note: use md5 if the client application does not support scram-sha-256 over mTLS
+      # e.g. Gitea < 10.2.0 requires: hostssl app <user> all md5 clientcert=verify-full
+```
+
+### Backup Schedule
+
+Always pair a `ScheduledBackup` with every CNPG cluster:
+
+```yaml
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: <app>-sql-backup
+  annotations:
+    argocd.argoproj.io/sync-wave: "50"  # Deploy late so CSI Snapshot CRDs are available
+spec:
+  schedule: "0 0 0 * * *"  # Daily at midnight
+  method: volumeSnapshot
+  backupOwnerReference: cluster
+  cluster:
+    name: <app>-sql
+```
+
+### Sync Wave Order
+
+For CNPG-backed applications, use these sync waves to ensure correct ordering:
+
+| Wave | Resource |
+|------|---------|
+| `0` (default) | Namespace, cert-manager `Issuer`/`Certificate` resources |
+| `2` | CNPG `Cluster` (depends on certificates) |
+| `5` | Application that consumes the database |
+| `50` | `ScheduledBackup` (depends on CSI Snapshot CRDs) |
+
+---
+
 ## Important Notes
 
 - `rendered/` is gitignored — always regenerate via render-overlay.sh
