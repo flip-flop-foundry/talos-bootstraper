@@ -261,9 +261,11 @@ These instructions apply whenever the Copilot Coding Agent picks up an issue in 
 
 ### Before Writing Any Code
 
-1. **Read the issue carefully.** Identify every explicit requirement and any implicit constraints (e.g. "don't break existing clusters").
+1. **Read the issue carefully.** Identify every explicit requirement and any implicit constraints.
 2. **Ask clarifying questions first.** If any requirement is ambiguous — or if fulfilling it would require touching files not mentioned in the issue — post a comment on the issue asking for clarification **before** opening a pull request or writing code. Wait for a response. Do not guess.
 3. **Acknowledge scope.** Briefly summarise in an issue comment what you plan to change and why, so the requester can correct misunderstandings early.
+4. If possible with out adding a lot of complexity, avoid breaking existing clusters. Breaking existing clusters/deployments can be acceptable, if **stated very clearly** and **explained why** this is needed
+
 
 ### Making Changes
 
