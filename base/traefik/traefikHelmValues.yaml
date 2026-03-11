@@ -33,6 +33,10 @@ ports:
     expose:
       default: true  # Already true
     exposedPort: 80
+    # Permanently redirect all HTTP traffic to HTTPS
+    redirectTo:
+      port: websecure
+      permanent: true
   websecure:
     expose:
       default: true  # Already true
@@ -40,7 +44,23 @@ ports:
     tls:
       enabled: true
 
+# Apply HSTS middleware globally to all HTTPS routes
+additionalArguments:
+  - "--entrypoints.websecure.http.middlewares=traefik-hsts-headers@kubernetescrd"
+
 extraObjects:
+  - apiVersion: traefik.io/v1alpha1
+    kind: Middleware
+    metadata:
+      name: hsts-headers
+      namespace: traefik
+    spec:
+      headers:
+        # Strict-Transport-Security: instructs browsers to always use HTTPS.
+        # Does not pin any certificate or CA — purely a "use HTTPS" directive.
+        stsSeconds: 31536000       # 1 year
+        stsIncludeSubdomains: true
+        stsPreload: true
   - apiVersion: cert-manager.io/v1
     kind: Certificate
     metadata:
