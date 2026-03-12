@@ -19,18 +19,19 @@
 # is only written to nodes running the Spegel DaemonSet, so no external client has
 # the necessary mirror configuration to even discover the registry.
 
-# Talos containerd socket path — same as the chart default
 spegel:
-  containerdSock: "/run/containerd/containerd.sock"
-  containerdNamespace: "k8s.io"
+
+
   # Path where Spegel writes per-registry mirror configuration (hosts.toml files).
   # On Talos this must be /etc/cri/conf.d/hosts — per the official Spegel documentation.
   # See: https://spegel.dev/docs/getting-started/#talos
   containerdRegistryConfigPath: "/etc/cri/conf.d/hosts"
-  containerdContentPath: "/var/lib/containerd/io.containerd.content.v1.content"
-  containerdMirrorAdd: true
+
+
   resolveTags: true
   logLevel: "INFO"
+  # -- When true enables debug web page.
+  debugWebEnabled: false
 
 # system-node-critical ensures Spegel is scheduled before lower-priority workloads
 # and is not evicted during node pressure events.
@@ -57,9 +58,6 @@ tolerations:
   - effect: NoSchedule
     operator: Exists
 
-# Restrict scheduling to Linux nodes only
-nodeSelector:
-  kubernetes.io/os: linux
 
 # Liveness probe is disabled (chart default). The startup probe (periodSeconds: 3,
 # failureThreshold: 60) covers bootstrap health, and the readiness probe handles
