@@ -1,16 +1,16 @@
-# https://artifacthub.io/packages/helm/spegel/spegel
-# https://spegel.dev/docs/getting-started/
+# https://spegel.dev/docs/getting-started/#talos
 #
-# Talos-specific notes:
-# - containerdRegistryConfigPath is set to /var/etc/cri/conf.d — the writable CRI
-#   config directory on Talos. Spegel writes per-registry hosts.toml files into
-#   subdirectories here (e.g. /var/etc/cri/conf.d/docker.io/hosts.toml).
-# - Two Talos machine.files patches in talosPatchConfig.yaml are required:
-#   1. /var/etc/cri/conf.d/20-spegel.part — sets discard_unpacked_layers = false
-#      (Talos enables layer discarding by default, which breaks Spegel).
-#   2. /var/etc/cri/conf.d/20-spegel-registry.part — sets config_path so
-#      containerd knows to read mirror configs from /var/etc/cri/conf.d.
-# - The containerd socket and content store paths are identical to standard Kubernetes.
+# Talos-specific notes (https://spegel.dev/docs/getting-started/#talos):
+# - containerdRegistryConfigPath is set to /etc/cri/conf.d/hosts — the path where
+#   Spegel writes per-registry mirror configuration on Talos nodes.
+# - A single machine.files patch in talosPatchConfig.yaml is required:
+#   /etc/cri/conf.d/20-customization.part — sets discard_unpacked_layers = false
+#   (Talos enables layer discarding by default, which breaks Spegel).
+# - Spegel itself manages writing mirror configs into containerdRegistryConfigPath;
+#   no additional machine.files entry is needed for the registry config path.
+# - The containerd socket and content store paths are the same as standard Kubernetes.
+# - The spegel namespace has pod-security.kubernetes.io/enforce=privileged because
+#   Talos's default PSA profile is too restrictive for Spegel to operate.
 #
 # mTLS: Spegel does not use mTLS for its peer-to-peer communication; it uses an
 # HTTP registry protocol over the cluster-internal network (pod/node IPs). Access is
@@ -24,10 +24,9 @@ spegel:
   containerdSock: "/run/containerd/containerd.sock"
   containerdNamespace: "k8s.io"
   # Path where Spegel writes per-registry mirror configuration (hosts.toml files).
-  # On Talos this must be /var/etc/cri/conf.d (the writable CRI config directory),
-  # not the standard-Linux default of /etc/containerd/certs.d.
-  # Must match the config_path in the 20-spegel-registry.part machine.files patch.
-  containerdRegistryConfigPath: "/var/etc/cri/conf.d"
+  # On Talos this must be /etc/cri/conf.d/hosts — per the official Spegel documentation.
+  # See: https://spegel.dev/docs/getting-started/#talos
+  containerdRegistryConfigPath: "/etc/cri/conf.d/hosts"
   containerdContentPath: "/var/lib/containerd/io.containerd.content.v1.content"
   containerdMirrorAdd: true
   resolveTags: true

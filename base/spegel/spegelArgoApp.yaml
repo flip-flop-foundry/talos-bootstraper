@@ -4,6 +4,9 @@ metadata:
   name: ${SPEGEL_NAMESPACE}
   labels:
     initial-deploy-with-kubectl: "true"
+    # Talos's default PSA profile is too restrictive for Spegel (hostPort, host mounts).
+    # https://spegel.dev/docs/getting-started/#talos
+    pod-security.kubernetes.io/enforce: privileged
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application

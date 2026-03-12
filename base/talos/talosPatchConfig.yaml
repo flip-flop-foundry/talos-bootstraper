@@ -23,27 +23,17 @@ machine:
   features:
     hostDNS:
       forwardKubeDNSToHost: false
-  # Required for Spegel on Talos. Config fragments in /var/etc/cri/conf.d/ are
-  # merged by containerd at startup (Talos's writable CRI config directory).
-  #
-  # 1. Disable layer discarding: Talos enables discard_unpacked_layers by default,
-  #    which prevents Spegel from serving cached images to peers.
-  # 2. Set registry config_path to /var/etc/cri/conf.d so containerd loads
-  #    the mirror configs (hosts.toml files) that Spegel writes into subdirectories there.
+  # Required for Spegel on Talos — https://spegel.dev/docs/getting-started/#talos
+  # Talos enables discard_unpacked_layers by default, which prevents Spegel from
+  # serving cached image layers to peers. This must be disabled explicitly.
+  # Spegel itself writes per-registry mirror configs to /etc/cri/conf.d/hosts.
   files:
-    - path: /var/etc/cri/conf.d/20-spegel.part
+    - path: /etc/cri/conf.d/20-customization.part
       permissions: 0o644
       op: create
       content: |
         [plugins."io.containerd.cri.v1.images"]
           discard_unpacked_layers = false
-    - path: /var/etc/cri/conf.d/20-spegel-registry.part
-      permissions: 0o644
-      op: create
-      content: |
-        [plugins."io.containerd.cri.v1.images"]
-          [plugins."io.containerd.cri.v1.images".registry]
-            config_path = "/var/etc/cri/conf.d"
 cluster:
   allowSchedulingOnControlPlanes: $TALOS_ALLOW_SCHEDULING_ON_CONTROLPLANES
   network:
