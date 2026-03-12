@@ -8,16 +8,8 @@
 #   (Talos enables layer discarding by default, which breaks Spegel).
 # - Spegel itself manages writing mirror configs into containerdRegistryConfigPath;
 #   no additional machine.files entry is needed for the registry config path.
-# - The containerd socket and content store paths are the same as standard Kubernetes.
 # - The spegel namespace has pod-security.kubernetes.io/enforce=privileged because
 #   Talos's default PSA profile is too restrictive for Spegel to operate.
-#
-# mTLS: Spegel does not use mTLS for its peer-to-peer communication; it uses an
-# HTTP registry protocol over the cluster-internal network (pod/node IPs). Access is
-# restricted to cluster nodes by a CiliumNetworkPolicy (spegelNetworkPolicy.yaml) which
-# only allows ingress from `fromEntities: cluster`, and the containerd mirror config
-# is only written to nodes running the Spegel DaemonSet, so no external client has
-# the necessary mirror configuration to even discover the registry.
 
 spegel:
 

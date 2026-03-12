@@ -329,6 +329,7 @@ spec:
 
 When writing Helm values for a new component:
 - **Always use the latest chart version** available at the time of writing. Set `export COMPONENT_HELM_VERSION="<latest>"` in every overlay `.env` file.
+- **Only include non-default values.** Do not copy default chart values into the values file unless you have a specific reason to override them (e.g. performance tuning, security hardening, or Talos-specific paths). When overriding a default for a non-obvious reason, add a brief comment explaining why.
 - After writing the values, **render the final manifests** (`./adminTasks/render-overlay.sh`) and inspect every generated resource to confirm it meets the security guidelines above.
 
 #### Least-Privilege Service Accounts
@@ -349,7 +350,8 @@ When writing Helm values for a new component:
 
 - For CNPG databases: always configure mTLS (see [CNPG Database Cluster Pattern](#cnpg-database-cluster-pattern)).
 - For internal gRPC/HTTP services: consider Cilium's `CiliumNetworkPolicy` with mutual authentication, or sidecar-based mTLS if a service mesh is deployed.
-- Document the mTLS approach (cert-manager, CNPG-native, or mesh) in a comment near the relevant resource.
+- Document the mTLS approach (cert-manager, CNPG-native, or mesh) in a comment near the relevant resource when mTLS is actively configured.
+- **Do not** add comments to Helm values files stating that mTLS is not applicable or not used by a component. Security notes belong in the component's `README.md`, not in values files.
 
 ### Certificates — Use cert-manager ClusterIssuer
 

@@ -27,7 +27,7 @@ Additionally, the Spegel namespace has `pod-security.kubernetes.io/enforce: priv
 Access to the Spegel registry is restricted at two layers:
 
 1. **Containerd mirror config** — mirror configs are only written to nodes running the Spegel DaemonSet, so no external client can discover the registry.
-2. **CiliumNetworkPolicy** (`spegelNetworkPolicy.yaml`) — restricts all ingress to Spegel pods (registry 5000, router 5001, metrics 9090, cleanup probe 8080) to `fromEntities: cluster` only. Egress allows `world` (upstream registries for cache misses) and `cluster` (DNS, API server).
+2. **CiliumNetworkPolicy** (`spegelNetworkPolicy.yaml`) — restricts all ingress to Spegel pods (registry 5000, router 5001, cleanup probe 8080) to `fromEntities: cluster` only. Metrics port 9090 is intentionally excluded (no Prometheus stack deployed). Egress allows `world` (upstream registries for cache misses) and `cluster` (DNS, API server).
 
 ## Dependencies
 
