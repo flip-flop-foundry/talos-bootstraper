@@ -26,6 +26,19 @@
         "clear": true
       },
       "problemMatcher": []
+    },
+    {
+      "label": "Apply Talos configs",
+      "type": "shell",
+      "command": "${workspaceFolder}/adminTasks/cluster-initialSetup.sh",
+      "args": ["${input:envFile}"],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
     }
   ],
   "inputs": [

@@ -38,8 +38,9 @@ spec:
         factor: 2
         maxDuration: 10m
   sources:
-    - chart: spegel
-      repoURL: https://spegel-org.github.io/spegel #https://artifacthub.io/packages/helm/spegel/spegel
+
+    - repoURL: oci://ghcr.io/spegel-org/helm-charts/spegel
+      path: .
       targetRevision: ${SPEGEL_HELM_VERSION}
       helm:
         releaseName: spegel

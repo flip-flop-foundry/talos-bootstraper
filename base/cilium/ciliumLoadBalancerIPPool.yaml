@@ -5,3 +5,4 @@ metadata:
 spec:
   blocks:
     - cidr: ${CILIUM_LB_IP_CIDR}
+  allowFirstLastIPs: "No" #Block first and last IPs in the range (network and broadcast address, https://docs.cilium.io/en/stable/network/lb-ipam/#cidrs-ranges-and-reserved-ips)

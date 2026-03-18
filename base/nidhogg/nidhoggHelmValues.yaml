@@ -1,4 +1,5 @@
 # https://github.com/pelotech/nidhogg
+# https://github.com/pelotech/nidhogg/blob/main/charts/nidhogg/values.yaml
 #
 # Nidhogg taints new nodes with a NoSchedule taint until the watched DaemonSet is ready.
 # This ensures Spegel (image cache) is running on a node before general workloads are scheduled.

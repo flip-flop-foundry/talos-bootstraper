@@ -154,8 +154,14 @@ fi
 ((++STEP))
 log_info "Step ${STEP}/${TOTAL_STEPS}: Starting PXE server(s)..."
 
-if ! command -v docker &>/dev/null; then
-  log_error "Docker is not installed or not in PATH."
+detect_container_runtime || exit 1
+log_info "Using container runtime: ${CONTAINER_RUNTIME}"
+
+if ! "$CONTAINER_RUNTIME" compose version >/dev/null 2>&1; then
+  log_error "${CONTAINER_RUNTIME} compose is not available."
+  if [[ "$CONTAINER_RUNTIME" == "podman" ]]; then
+    log_error "Install podman-compose or enable podman compose support."
+  fi
   exit 1
 fi
 
@@ -171,11 +177,11 @@ else
 fi
 
 # Check if already running
-if docker ps --format '{{.Names}}' | grep -q '^talos-pxe-server$'; then
+if "$CONTAINER_RUNTIME" ps --format '{{.Names}}' | grep -q '^talos-pxe-server$'; then
   log_info "PXE server container(s) already running, restarting for updated assets..."
-  docker compose "${COMPOSE_ARGS[@]}" up -d --force-recreate
+  "$CONTAINER_RUNTIME" compose "${COMPOSE_ARGS[@]}" up -d --force-recreate
 else
-  docker compose "${COMPOSE_ARGS[@]}" up -d
+  "$CONTAINER_RUNTIME" compose "${COMPOSE_ARGS[@]}" up -d
 fi
 
 # ============================================================================

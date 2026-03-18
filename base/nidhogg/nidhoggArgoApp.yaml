@@ -35,8 +35,8 @@ spec:
         factor: 2
         maxDuration: 10m
   sources:
-    - chart: nidhogg
-      repoURL: oci://ghcr.io/pelotech/charts #https://github.com/pelotech/nidhogg
+    - repoURL: oci://ghcr.io/pelotech/charts/nidhogg #https://github.com/pelotech/nidhogg
+      path: .
       targetRevision: ${NIDHOGG_HELM_VERSION}
       helm:
         releaseName: nidhogg
