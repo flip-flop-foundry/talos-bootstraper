@@ -28,6 +28,21 @@
       "problemMatcher": []
     },
     {
+      "label": "Render and Push to Gitea",
+      "dependsOn": ["Render Overlay"],
+      "dependsOrder": "sequence",
+      "type": "shell",
+      "command": "${workspaceFolder}/adminTasks/push-to-gitea.sh",
+      "args": ["${input:envFile}"],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": false
+      },
+      "problemMatcher": []
+    },
+    {
       "label": "Apply Talos configs",
       "type": "shell",
       "command": "${workspaceFolder}/adminTasks/cluster-initialSetup.sh",
