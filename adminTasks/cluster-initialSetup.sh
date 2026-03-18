@@ -135,9 +135,11 @@ if [[ "${TALOS_PXE_ENABLED:-false}" == "true" ]]; then
   for NODE in "${ALL_NODES[@]}"; do
     set +e
     # Try with talosconfig first (works for bootstrapped nodes), fall back to --insecure (maintenance mode)
-    STATUS=$(talosctl get machinestatus --nodes "$NODE" --endpoints "$NODE" 2>&1)
+    STATUS=$(talosctl get machinestatus --nodes "$NODE" --endpoints "$NODE" 2>&1 &
+             PID=$!; sleep 2 && kill "$PID" 2>/dev/null & wait "$PID")
     if [[ $? -ne 0 ]]; then
-      STATUS=$(talosctl get machinestatus --nodes "$NODE" --endpoints "$NODE" --insecure 2>&1)
+      STATUS=$(talosctl get machinestatus --nodes "$NODE" --endpoints "$NODE" --insecure 2>&1 &
+               PID=$!; sleep 2 && kill "$PID" 2>/dev/null & wait "$PID")
     fi
     set -e
 
@@ -204,7 +206,11 @@ if [[ "${TALOS_PXE_ENABLED:-false}" == "true" ]]; then
     else
       PXE_COMPOSE_ARGS+=(--profile tftp)
     fi
-    docker compose "${PXE_COMPOSE_ARGS[@]}" down 2>/dev/null || true
+    if detect_container_runtime; then
+      "$CONTAINER_RUNTIME" compose "${PXE_COMPOSE_ARGS[@]}" down 2>/dev/null || true
+    else
+      log_warn "No container runtime found for PXE cleanup. Skipping container shutdown."
+    fi
     log_success "PXE server containers stopped and removed."
   fi
 fi
@@ -246,35 +252,33 @@ fi
 
   log_info "Creating patch for Talos config..."
 
-  envsubst < "${BASE_DIR}/talos/talosPatchConfig.yaml" > "talos/talosPatchConfigRendered.yaml"
-  envsubst < "${BASE_DIR}/talos/talosPatchConfigControlplane.yaml" > "talos/talosPatchConfigControlplaneRendered.yaml"
+  "$SCRIPT_DIR/render-overlay.sh" "$CONFIG_FILE"
 
   # If TALOS_MIN_INSTALL_DISK_SIZE_GB is set, add a diskSelector with minimum size to avoid installing on small USB drives
   if [ -n "${TALOS_MIN_INSTALL_DISK_SIZE_GB:-}" ]; then
     log_info "TALOS_MIN_INSTALL_DISK_SIZE_GB is set: adding install diskSelector (size >= ${TALOS_MIN_INSTALL_DISK_SIZE_GB}GB)"
-    yq -i ".machine.install.diskSelector.size = \">= ${TALOS_MIN_INSTALL_DISK_SIZE_GB}GB\"" "talos/talosPatchConfigRendered.yaml"
+    yq -i ".machine.install.diskSelector.size = \">= ${TALOS_MIN_INSTALL_DISK_SIZE_GB}GB\"" "$RENDERED_DIR/talos/talosPatchConfig.yaml"
   fi
 
-  CONFIG_PATCH_ARGS="--config-patch @talos/talosPatchConfigRendered.yaml"
-  CONFIG_PATCH_CONTROLPLANE_ARGS="--config-patch-control-plane @talos/talosPatchConfigControlplaneRendered.yaml"
+  CONFIG_PATCH_ARGS=(--config-patch "@$RENDERED_DIR/talos/talosPatchConfig.yaml")
+  CONFIG_PATCH_CONTROLPLANE_ARGS=(--config-patch-control-plane "@$RENDERED_DIR/talos/talosPatchConfigControlplane.yaml")
 
 
 log_info "Generating Talos config..."
 
 
-# set -x
+set -x
 talosctl gen config --with-secrets "$OVERLAY_DIR/talos/talos-secrets.yaml" \
   --install-image "$TALOS_INSTALL_IMAGE" \
   --output "$OVERLAY_DIR/talos/" \
   "$TALOS_CLUSTER_NAME" "https://${TALOS_CLUSTER_ENDPOINT}:6443" \
-  $CONFIG_PATCH_ARGS \
-  $CONFIG_PATCH_CONTROLPLANE_ARGS \
+  "${CONFIG_PATCH_ARGS[@]}" \
+  "${CONFIG_PATCH_CONTROLPLANE_ARGS[@]}" \
   --force \
   --kubernetes-version ${KUBERNETES_VERSION} \
   --talos-version ${TALOS_VERSION}
 
-rm "talos/talosPatchConfigRendered.yaml"
-rm "talos/talosPatchConfigControlplaneRendered.yaml"
+
   # DISABLED DISABLED DISABLED, replaced by KMS only for now
   # read -rsp "Enter Talos system disk LUKS passphrase (will not be echoed): " LUKS_PASSPHRASE
   # echo

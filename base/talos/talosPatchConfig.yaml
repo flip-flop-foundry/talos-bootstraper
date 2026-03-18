@@ -23,6 +23,17 @@ machine:
   features:
     hostDNS:
       forwardKubeDNSToHost: false
+  # Required for Spegel on Talos — https://spegel.dev/docs/getting-started/#talos
+  # Talos enables discard_unpacked_layers by default, which prevents Spegel from
+  # serving cached image layers to peers. This must be disabled explicitly.
+  # Spegel itself writes per-registry mirror configs to /etc/cri/conf.d/hosts.
+  files:
+    - path: /etc/cri/conf.d/20-customization.part
+      permissions: 0o644
+      op: create
+      content: |
+        [plugins."io.containerd.cri.v1.images"]
+          discard_unpacked_layers = false
 cluster:
   allowSchedulingOnControlPlanes: $TALOS_ALLOW_SCHEDULING_ON_CONTROLPLANES
   network:

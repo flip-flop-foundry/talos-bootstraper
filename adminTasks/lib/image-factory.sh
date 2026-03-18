@@ -5,6 +5,35 @@
 
 FACTORY_BASE_URL="https://factory.talos.dev"
 
+# Detect container runtime CLI.
+# Prefers TALOS_CONTAINER_CLI if set, then docker, then podman.
+detect_container_runtime() {
+  if [[ -n "${CONTAINER_RUNTIME:-}" ]]; then
+    return 0
+  fi
+
+  local preferred="${TALOS_CONTAINER_CLI:-}"
+  if [[ -n "$preferred" ]]; then
+    if command -v "$preferred" >/dev/null 2>&1; then
+      CONTAINER_RUNTIME="$preferred"
+      return 0
+    fi
+    log_error "TALOS_CONTAINER_CLI is set to '$preferred' but not found in PATH."
+    return 1
+  fi
+
+  if command -v docker >/dev/null 2>&1; then
+    CONTAINER_RUNTIME="docker"
+  elif command -v podman >/dev/null 2>&1; then
+    CONTAINER_RUNTIME="podman"
+  else
+    log_error "No container runtime found. Install docker or podman, or set TALOS_CONTAINER_CLI."
+    return 1
+  fi
+
+  return 0
+}
+
 # Create a schematic on the Image Factory and return the schematic ID.
 # Uses TALOS_SCHEMATIC_EXTENSIONS and TALOS_SCHEMATIC_EXTRA_KERNEL_ARGS arrays from env.
 # Returns: schematic ID (hash) on stdout
@@ -180,13 +209,45 @@ EOF
   log_info "  Chainload URL: ${pxe_server_url}/ipxe-boot.ipxe"
   log_info "  First build is slow (~7min on Apple Silicon); subsequent builds only re-link (~10s)..."
 
-  if ! docker buildx build \
-    --platform linux/amd64 \
-    -f "${pxe_dir}/Dockerfile.ipxe" \
-    --output "type=local,dest=${output_dir}" \
-    "${pxe_dir}"; then
-    log_error "iPXE firmware build failed"
-    return 1
+  detect_container_runtime || return 1
+  log_info "  Container runtime: ${CONTAINER_RUNTIME}"
+
+  if [[ "$CONTAINER_RUNTIME" == "docker" ]] && docker buildx version >/dev/null 2>&1; then
+    if ! docker buildx build \
+      --platform linux/amd64 \
+      -f "${pxe_dir}/Dockerfile.ipxe" \
+      --output "type=local,dest=${output_dir}" \
+      "${pxe_dir}"; then
+      log_error "iPXE firmware build failed"
+      return 1
+    fi
+  else
+    local image_tag="talos-ipxe-builder:local"
+    local container_id=""
+
+    log_info "  Using compatible build fallback (no docker buildx)."
+    if ! "$CONTAINER_RUNTIME" build \
+      --platform linux/amd64 \
+      -f "${pxe_dir}/Dockerfile.ipxe" \
+      -t "$image_tag" \
+      "${pxe_dir}"; then
+      log_error "iPXE firmware build failed"
+      return 1
+    fi
+
+    container_id=$("$CONTAINER_RUNTIME" create "$image_tag") || {
+      log_error "Failed to create temporary container for artifact extraction"
+      return 1
+    }
+
+    if ! "$CONTAINER_RUNTIME" cp "${container_id}:/ipxe.efi" "${output_dir}/ipxe.efi"; then
+      "$CONTAINER_RUNTIME" rm -f "$container_id" >/dev/null 2>&1 || true
+      log_error "Failed to extract ipxe.efi from build image"
+      return 1
+    fi
+
+    "$CONTAINER_RUNTIME" rm -f "$container_id" >/dev/null 2>&1 || true
+    "$CONTAINER_RUNTIME" rmi "$image_tag" >/dev/null 2>&1 || true
   fi
 
   # Save hash for cache validation

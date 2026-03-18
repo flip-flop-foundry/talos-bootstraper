@@ -570,7 +570,7 @@ push_to_gitea_cluster_services() {
         fi
         
         # Add all files
-        git add -A -f
+        git add -A -f -f -- . ':(exclude)adminTasks/pxe/assets/**'
         
         # Commit
         if git diff --cached --quiet; then

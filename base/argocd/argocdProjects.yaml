@@ -24,6 +24,8 @@ spec:
     - "external-dns"
     - "${RELOADER_NAMESPACE}"
     - "${SMB_CSI_NAMESPACE}"
+    - "${SPEGEL_NAMESPACE}"
+    - "${NIDHOGG_NAMESPACE}"
   destinations:
     - namespace: '*'
       server: '*'
@@ -67,6 +69,10 @@ spec:
     - namespace: "!external-dns"
       server: '*'
     - namespace: "!${RELOADER_NAMESPACE}"
+      server: '*'
+    - namespace: "!${SPEGEL_NAMESPACE}"
+      server: '*'
+    - namespace: "!${NIDHOGG_NAMESPACE}"
       server: '*'
   namespaceResourceBlacklist:
   - group: '*'

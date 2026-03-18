@@ -1,0 +1,68 @@
+# https://spegel.dev/docs/getting-started/#talos
+#
+# Talos-specific notes (https://spegel.dev/docs/getting-started/#talos):
+# - containerdRegistryConfigPath is set to /etc/cri/conf.d/hosts — the path where
+#   Spegel writes per-registry mirror configuration on Talos nodes.
+# - A single machine.files patch in talosPatchConfig.yaml is required:
+#   /etc/cri/conf.d/20-customization.part — sets discard_unpacked_layers = false
+#   (Talos enables layer discarding by default, which breaks Spegel).
+# - Spegel itself manages writing mirror configs into containerdRegistryConfigPath;
+#   no additional machine.files entry is needed for the registry config path.
+# - The spegel namespace has pod-security.kubernetes.io/enforce=privileged because
+#   Talos's default PSA profile is too restrictive for Spegel to operate.
+
+spegel:
+
+
+  # Path where Spegel writes per-registry mirror configuration (hosts.toml files).
+  # On Talos this must be /etc/cri/conf.d/hosts — per the official Spegel documentation.
+  # See: https://spegel.dev/docs/getting-started/#talos
+  containerdRegistryConfigPath: "/etc/cri/conf.d/hosts"
+
+
+  resolveTags: true
+  logLevel: "INFO"
+  # -- When true enables debug web page.
+  debugWebEnabled: false
+
+# system-node-critical ensures Spegel is scheduled before lower-priority workloads
+# and is not evicted during node pressure events.
+priorityClassName: system-node-critical
+
+# Resource limits — Spegel is lightweight; keep footprint small.
+resources:
+  requests:
+    memory: 128Mi
+    cpu: 10m
+  limits:
+    memory: 256Mi
+    cpu: 200m
+
+# Tolerations — must tolerate all taints so Spegel can run on every node,
+# including control-plane nodes and nodes with the Nidhogg taint
+# (nidhogg.uswitch.com/spegel.spegel:NoSchedule).
+# Spegel must start before Nidhogg removes its taint so it can serve images.
+tolerations:
+  - key: CriticalAddonsOnly
+    operator: Exists
+  - effect: NoExecute
+    operator: Exists
+  - effect: NoSchedule
+    operator: Exists
+
+
+# Liveness probe is disabled (chart default). The startup probe (periodSeconds: 3,
+# failureThreshold: 60) covers bootstrap health, and the readiness probe handles
+# ongoing status. Enabling liveness can cause restart loops when Spegel is under
+# heavy load resolving tags for a large image set on bootstrap.
+livenessProbe:
+  enabled: false
+
+# Prometheus ServiceMonitor and Grafana dashboard are disabled — no metrics stack deployed.
+# To enable scraping, set serviceMonitor.enabled: true and add port 9090 back to
+# spegelNetworkPolicy.yaml.
+serviceMonitor:
+  enabled: false
+
+grafanaDashboard:
+  enabled: false

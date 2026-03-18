@@ -65,11 +65,15 @@ reset_talos_node() {
 
   local maintenance_check
   set +e
-  maintenance_check=$(talosctl get machinestatus --nodes "$node" --endpoints "$node" --insecure 2>&1)
+  maintenance_check=$(talosctl get machinestatus --nodes "$node" --endpoints "$node" --insecure 2>&1 &
+               PID=$!; sleep 2 && kill "$PID" && echo "timed out" 2>/dev/null & wait "$PID")
   set -e
 
   if echo "$maintenance_check" | grep -qi "maintenance"; then
     log_success "Node $node is already in maintenance mode, no reset needed."
+    return 0
+  elif echo "$maintenance_check" | grep -qi "timed out"; then
+    log_warn "Node $node did not respond to maintenance check, assuming it's down or unreachable."
     return 0
   fi
 

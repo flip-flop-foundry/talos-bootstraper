@@ -31,15 +31,19 @@ service:
 ports:
   web:
     expose:
-      default: true  # Already true
+      default: true
     exposedPort: 80
-    # Permanently redirect all HTTP traffic to HTTPS
-    redirectTo:
-      port: websecure
-      permanent: true
+    # Global HTTP → HTTPS redirect. Implemented as a lowest-priority catch-all router,
+    # so any explicit IngressRoute/Ingress on the 'web' entrypoint will take precedence
+    # and bypass this redirect (opt-out by defining an explicit HTTP route).
+    redirections:
+      entryPoint:
+        to: websecure
+        scheme: https
+        permanent: true
   websecure:
     expose:
-      default: true  # Already true
+      default: true
     exposedPort: 443
     tls:
       enabled: true
@@ -65,10 +69,6 @@ tlsOptions:
       - X25519
       - CurveP256
       - CurveP384
-
-# Apply security headers middleware globally to all HTTPS routes
-additionalArguments:
-  - "--entrypoints.websecure.http.middlewares=traefik-hsts-headers@kubernetescrd"
 
 extraObjects:
   - apiVersion: traefik.io/v1alpha1
