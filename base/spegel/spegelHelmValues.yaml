@@ -21,9 +21,9 @@ spegel:
 
 
   resolveTags: false
-  logLevel: "DEBUG"
+  logLevel: "INFO" #INFO, DEBUG, ERROR
   # -- When true enables debug web page.
-  debugWebEnabled: true
+  debugWebEnabled: false
 
 # system-node-critical ensures Spegel is scheduled before lower-priority workloads
 # and is not evicted during node pressure events.
