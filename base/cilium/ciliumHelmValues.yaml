@@ -9,6 +9,9 @@ kubeProxyReplacement: true
 # Allow Cilium to run on controlplane nodes
 tolerations:
   - operator: Exists
+  - key: nidhogg.uswitch.com/spegel.spegel
+    operator: Exists
+    effect: NoSchedule
   
 securityContext:
   capabilities:

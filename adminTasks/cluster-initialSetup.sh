@@ -267,7 +267,7 @@ fi
 log_info "Generating Talos config..."
 
 
-set -x
+#set -x
 talosctl gen config --with-secrets "$OVERLAY_DIR/talos/talos-secrets.yaml" \
   --install-image "$TALOS_INSTALL_IMAGE" \
   --output "$OVERLAY_DIR/talos/" \

@@ -752,3 +752,8 @@ Check the output to confirm the security settings from the [Security Best Practi
 - **Description**: explain *what* changed, *why*, and list every file modified.
 - **One concern per PR.** If an issue covers multiple unrelated concerns, raise separate PRs or ask the requester how to proceed.
 - **Do not self-merge.** Always request a human review.
+
+
+
+curl -LO https://factory.talos.dev/image/ee21ef4a5ef808a9b7484cc0dda0f25075021691c8c09a276591eedb638ea1f9/v1.9.5/metal-arm64.raw.xz
+  xz -d metal-arm64.raw.xz

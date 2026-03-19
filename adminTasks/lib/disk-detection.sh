@@ -3,8 +3,6 @@
 # Dynamically detects all disks on Talos nodes and generates UserVolumeConfig manifests
 # Supports any number of disks per node
 
-set -euo pipefail
-
 # Source logging library if available
 if [ -f "$(dirname "$0")/lib/logging.sh" ]; then
     source "$(dirname "$0")/lib/logging.sh"
@@ -30,14 +28,17 @@ detect_node_disks() {
     
     log_info "Detecting disks on node: $node"
 
+    local normalize_hex='s/\\x\([0-9a-fA-F]\{2\}\)/\\u00\1/g'
+
     # Query disks from node, filter out WARNING lines
+    # Normalize \xNN hex escapes (not valid JSON but emitted by talosctl) to \u00NN
     local disks_json
     local error_output
-    if error_output=$("${talosctl_cmd[@]}" get disks --nodes "$node" --endpoints "$node" -o json 2>&1 | grep -v '^WARNING:'); then
+    if error_output=$("${talosctl_cmd[@]}" get disks --nodes "$node" --endpoints "$node" -o json 2>&1 | grep -v '^WARNING:' | sed "$normalize_hex"); then
         disks_json="$error_output"
     elif echo "$error_output" | grep -qE "certificate signed by unknown authority|certificate is not valid for any names"; then
         log_warn "Looks like non bootstrapped node, retrying with --insecure flag for node $node"
-        if ! disks_json=$("${talosctl_cmd[@]}" get disks --nodes "$node" --endpoints "$node" --insecure -o json 2>&1 | grep -v '^WARNING:'); then
+        if ! disks_json=$("${talosctl_cmd[@]}" get disks --nodes "$node" --endpoints "$node" --insecure -o json 2>&1 | grep -v '^WARNING:' | sed "$normalize_hex"); then
             log_error "Failed to query disks from node $node (even with --insecure)"
             log_error "Error: $disks_json"
             return 1
@@ -47,7 +48,7 @@ detect_node_disks() {
         log_error "Error: $error_output"
         return 1
     fi
-    
+
     # Validate JSON
     if ! echo "$disks_json" | jq empty 2>/dev/null; then
         log_error "Invalid JSON response from node $node"
@@ -55,26 +56,44 @@ detect_node_disks() {
         return 1
     fi
 
+    # Detect the boot/system disk by finding what is mounted at /var.
+    # Strip the partition suffix to get the base device:
+    #   /dev/sda3      -> /dev/sda
+    #   /dev/nvme0n1p3 -> /dev/nvme0n1
+    #   /dev/mmcblk0p3 -> /dev/mmcblk0
+    local system_disk=""
+    local mounts_json
+    if mounts_json=$("${talosctl_cmd[@]}" get mounts --nodes "$node" --endpoints "$node" -o json 2>/dev/null | grep -v '^WARNING:' | sed "$normalize_hex"); then
+        local var_source
+        var_source=$(echo "$mounts_json" | jq -r 'select(.spec.target == "/var") | .spec.source' 2>/dev/null | head -n1)
+        if [ -n "$var_source" ]; then
+            # Strip partition suffix: nvme/mmcblk use pN, sd/vd use plain digit(s)
+            system_disk=$(echo "$var_source" | sed 's/\(nvme[0-9]*n[0-9]*\|mmcblk[0-9]*\)p[0-9]*$/\1/;s/\([sv]d[a-z]\)[0-9]*$/\1/')
+            log_info "Detected system disk on $node: $system_disk (from /var source: $var_source)"
+        fi
+    fi
+    if [ -z "$system_disk" ]; then
+        log_warn "Could not detect system disk on $node via mounts, falling back to /dev/vda exclusion only"
+        system_disk="/dev/vda"
+    fi
 
     # Parse and filter disks
-    # Support different output shapes and field names from talosctl
     # Accepts: { items: [...] } or an array of objects or newline-delimited objects
-    # Build jq USB transport filter based on LONGHORN_IGNORE_USB_DISKS
     local usb_filter="."
     if [ "$ignore_usb" = "true" ]; then
         log_info "Filtering out USB disks (LONGHORN_IGNORE_USB_DISKS=true)"
-        usb_filter='select(($obj.spec.transport // $obj.spec.bus_path // "" | test("usb"; "i")) | not)'
+        usb_filter='select(($obj.spec.transport // "" | test("usb"; "i")) | not)'
     fi
 
     local non_system_disks
-    non_system_disks=$(echo "$disks_json" | jq -r --arg usb_filter "$usb_filter" '
+    non_system_disks=$(echo "$disks_json" | jq -r --arg system_disk "$system_disk" '
         ( .items? // (if type=="array" then . else [.] end) )[] as $obj |
         ($obj.spec.dev_path // $obj.spec.devicePath // "") as $dev |
         select($dev != "" ) |
         ($obj.spec.model // "unknown") as $model |
-        ($obj.spec.transport // $obj.spec.bus_path // "") as $transport |
-        select($dev != "/dev/sda" and $dev != "/dev/vda" and $dev != "/dev/nvme0n1") |
-        select($dev | test("/dev/[sv]d[b-z]|/dev/nvme[1-9]")) |
+        ($obj.spec.transport // "") as $transport |
+        select($dev != $system_disk) |
+        select($dev | test("^/dev/([sv]d[a-z]|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)$")) |
         select($model != "VIRTUAL-DISK") |
         {
             path: $dev,
@@ -85,7 +104,7 @@ detect_node_disks() {
         }
     ' 2>/dev/null)
 
-    # Apply USB filter post-jq if enabled (simpler than embedding conditional jq)
+    # Apply USB filter post-jq if enabled
     if [ "$ignore_usb" = "true" ] && [ -n "$non_system_disks" ]; then
         non_system_disks=$(echo "$non_system_disks" | jq -r '
             select((.transport // "" | test("usb"; "i")) | not)

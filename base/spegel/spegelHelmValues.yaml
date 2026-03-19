@@ -20,10 +20,10 @@ spegel:
   containerdRegistryConfigPath: "/etc/cri/conf.d/hosts"
 
 
-  resolveTags: true
-  logLevel: "INFO"
+  resolveTags: false
+  logLevel: "DEBUG"
   # -- When true enables debug web page.
-  debugWebEnabled: false
+  debugWebEnabled: true
 
 # system-node-critical ensures Spegel is scheduled before lower-priority workloads
 # and is not evicted during node pressure events.
