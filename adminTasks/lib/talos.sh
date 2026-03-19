@@ -98,17 +98,24 @@ reset_talos_node() {
 }
 
 # Apply Talos config to a node. Auto-detects whether --insecure is needed.
-# Usage: apply_talos_config <node_fqdn> <config_file>
+# If dry_run is "true", uses --dry-run to show what would change without applying.
+# Usage: apply_talos_config <node_fqdn> <config_file> [dry_run]
 apply_talos_config() {
   local node="$1"
   local config_file="$2"
+  local dry_run="${3:-false}"
 
   local insecure=""
   if ! talosctl get members --nodes "$node" &>/dev/null; then
     insecure=" --insecure"
   fi
 
-  talosctl apply-config${insecure} --nodes "$node" --file "$config_file"
+  if [[ "$dry_run" == "true" ]]; then
+    log_info "  [DRY RUN] Showing diff for $node (no changes will be applied)"
+    talosctl apply-config${insecure} --nodes "$node" --file "$config_file" --dry-run
+  else
+    talosctl apply-config${insecure} --nodes "$node" --file "$config_file"
+  fi
 }
 
 # Wait for a Talos node to reach "booting" or "running" state.

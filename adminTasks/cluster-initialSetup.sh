@@ -24,12 +24,27 @@ set -euo pipefail
 # ARGUMENT PARSING AND CONFIGURATION LOADING
 # ============================================================================
 
-if [ $# -ne 1 ]; then
-  echo "Usage: $0 <config-file>"
+DIFF_MODE=false
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --diff)
+      DIFF_MODE=true
+      shift
+      ;;
+    *)
+      POSITIONAL+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ ${#POSITIONAL[@]} -ne 1 ]]; then
+  echo "Usage: $0 [--diff] <config-file>"
   exit 1
 fi
 
-CONFIG_FILE="$1"
+CONFIG_FILE="${POSITIONAL[0]}"
 CONFIG_FILE="$(cd "$(dirname "$CONFIG_FILE")" && pwd)/$(basename "$CONFIG_FILE")"
 if [ ! -f "$CONFIG_FILE" ]; then
   echo "Config file $CONFIG_FILE not found!"
@@ -354,23 +369,41 @@ fi
 # APPLY TALOS CONFIG TO CONTROL NODES
 # ============================================================================
 
-log_info "Applying Talos config to controlplane nodes"
+if [[ "$DIFF_MODE" == "true" ]]; then
+  log_info "[DRY RUN] Showing config diff for control plane nodes (no changes will be applied)..."
+else
+  log_info "Applying Talos config to controlplane nodes"
+fi
 
 CLUSTER_ALREADY_BOOTSTRAPPED=true
 for NODE in "${TALOS_CONTROL_NODES[@]}"; do
   NODE_HOSTNAME=$(echo "$NODE" | cut -d'.' -f1)
   NODE_CONFIG_FILE="$RENDERED_DIR/talos/controlplane-${NODE_HOSTNAME}.yaml"
   
-  log_info "Applying Talos config to controlplane node $NODE from $NODE_CONFIG_FILE..."
-  apply_talos_config "$NODE" "$NODE_CONFIG_FILE"
+  log_info "  Applying Talos config to controlplane node $NODE from $NODE_CONFIG_FILE..."
+  apply_talos_config "$NODE" "$NODE_CONFIG_FILE" "$DIFF_MODE"
 
-  NODE_STATUS=$(wait_for_node_ready "$NODE" "${PREPARING_TIMEOUT:-300}") || exit 4
-  if [[ "$NODE_STATUS" == "booting" ]]; then
-    CLUSTER_ALREADY_BOOTSTRAPPED=false
+  if [[ "$DIFF_MODE" != "true" ]]; then
+    NODE_STATUS=$(wait_for_node_ready "$NODE" "${PREPARING_TIMEOUT:-300}") || exit 4
+    if [[ "$NODE_STATUS" == "booting" ]]; then
+      CLUSTER_ALREADY_BOOTSTRAPPED=false
+    fi
   fi
-
-
 done
+
+# In diff mode: show worker diffs immediately then exit (skipping bootstrap)
+if [[ "$DIFF_MODE" == "true" ]]; then
+  if [[ ${#TALOS_WORKER_NODES[@]} -gt 0 ]]; then
+    log_info "[DRY RUN] Showing config diff for worker nodes..."
+    for NODE in "${TALOS_WORKER_NODES[@]}"; do
+      NODE_HOSTNAME=$(echo "$NODE" | cut -d'.' -f1)
+      NODE_CONFIG_FILE="$RENDERED_DIR/talos/worker-${NODE_HOSTNAME}.yaml"
+      apply_talos_config "$NODE" "$NODE_CONFIG_FILE" "true"
+    done
+  fi
+  log_success "Diff complete — no changes were applied."
+  exit 0
+fi
 
 # ============================================================================
 # FETCH KUBECONFIG
