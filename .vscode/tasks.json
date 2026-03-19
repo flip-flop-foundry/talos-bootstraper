@@ -54,6 +54,22 @@
         "clear": true
       },
       "problemMatcher": []
+    },
+    {
+      "label": "Set Active Talos/Kube Context",
+      "type": "shell",
+      "command": "${workspaceFolder}/.vscode/tasks/set-active-talos-kube-context.sh",
+      "args": [
+        "${input:envFile}",
+        "${workspaceFolder}"
+      ],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
     }
   ],
   "inputs": [
