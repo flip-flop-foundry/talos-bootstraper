@@ -56,25 +56,66 @@ detect_node_disks() {
         return 1
     fi
 
-    # Detect the boot/system disk by finding what is mounted at /var.
-    # Strip the partition suffix to get the base device:
-    #   /dev/sda3      -> /dev/sda
-    #   /dev/nvme0n1p3 -> /dev/nvme0n1
-    #   /dev/mmcblk0p3 -> /dev/mmcblk0
+    # Detect the boot/system disk via Talos SystemDisk resource.
+    # Prefer devPath from talosctl output to avoid brittle mount-based inference.
     local system_disk=""
-    local mounts_json
-    if mounts_json=$("${talosctl_cmd[@]}" get mounts --nodes "$node" --endpoints "$node" -o json 2>/dev/null | grep -v '^WARNING:' | sed "$normalize_hex"); then
-        local var_source
-        var_source=$(echo "$mounts_json" | jq -r 'select(.spec.target == "/var") | .spec.source' 2>/dev/null | head -n1)
-        if [ -n "$var_source" ]; then
-            # Strip partition suffix: nvme/mmcblk use pN, sd/vd use plain digit(s)
-            system_disk=$(echo "$var_source" | sed 's/\(nvme[0-9]*n[0-9]*\|mmcblk[0-9]*\)p[0-9]*$/\1/;s/\([sv]d[a-z]\)[0-9]*$/\1/')
-            log_info "Detected system disk on $node: $system_disk (from /var source: $var_source)"
+    local systemdisk_json
+    local systemdisk_error
+    if systemdisk_error=$("${talosctl_cmd[@]}" get systemdisk --nodes "$node" --endpoints "$node" -o json 2>&1 | grep -v '^WARNING:' | sed "$normalize_hex"); then
+        systemdisk_json="$systemdisk_error"
+    elif echo "$systemdisk_error" | grep -qE "certificate signed by unknown authority|certificate is not valid for any names"; then
+        log_warn "Looks like non bootstrapped node, retrying systemdisk query with --insecure flag for node $node"
+        if ! systemdisk_json=$("${talosctl_cmd[@]}" get systemdisk --nodes "$node" --endpoints "$node" --insecure -o json 2>&1 | grep -v '^WARNING:' | sed "$normalize_hex"); then
+            log_warn "Failed to query systemdisk on $node (even with --insecure); will use fallback exclusion"
+        fi
+    else
+        log_warn "Failed to query systemdisk on $node; will use fallback exclusion"
+    fi
+
+    if [ -n "$systemdisk_json" ]; then
+        system_disk=$(echo "$systemdisk_json" | jq -r '
+            ( .items? // (if type=="array" then . else [.] end) )[] |
+            (
+                .spec.devPath //
+                .spec.dev_path //
+                .spec.devicePath //
+                .spec.device_path //
+                .devPath //
+                .dev_path //
+                ""
+            ) |
+            select(. != "")
+        ' 2>/dev/null | head -n1)
+        if [ -n "$system_disk" ]; then
+            log_info "Detected system disk on $node: $system_disk (from systemdisk devPath)"
         fi
     fi
+
     if [ -z "$system_disk" ]; then
-        log_warn "Could not detect system disk on $node via mounts, falling back to /dev/vda exclusion only"
-        system_disk="/dev/vda"
+        local detected_disks
+        detected_disks=$(echo "$disks_json" | jq -r '
+            ( .items? // (if type=="array" then . else [.] end) )[] |
+            (
+                .spec.devPath //
+                .spec.dev_path //
+                .spec.devicePath //
+                .spec.device_path //
+                ""
+            ) |
+            select(. != "")
+        ' 2>/dev/null | paste -sd ', ' -)
+
+        log_error "Could not detect system disk on $node via systemdisk; aborting disk detection"
+        if [ -n "$systemdisk_error" ]; then
+            log_error "systemdisk command output: $systemdisk_error"
+        fi
+        if [ -n "$systemdisk_json" ]; then
+            log_error "systemdisk JSON payload: $systemdisk_json"
+        fi
+        if [ -n "$detected_disks" ]; then
+            log_error "Disks reported on node $node: $detected_disks"
+        fi
+        return 1
     fi
 
     # Parse and filter disks
