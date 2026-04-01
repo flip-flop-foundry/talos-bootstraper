@@ -26,6 +26,7 @@ spec:
     - "${SMB_CSI_NAMESPACE}"
     - "${SPEGEL_NAMESPACE}"
     - "${NIDHOGG_NAMESPACE}"
+    - "${KUBEVIRT_NAMESPACE}"
   destinations:
     - namespace: '*'
       server: '*'
@@ -73,6 +74,8 @@ spec:
     - namespace: "!${SPEGEL_NAMESPACE}"
       server: '*'
     - namespace: "!${NIDHOGG_NAMESPACE}"
+      server: '*'
+    - namespace: "!${KUBEVIRT_NAMESPACE}"
       server: '*'
   namespaceResourceBlacklist:
   - group: '*'
