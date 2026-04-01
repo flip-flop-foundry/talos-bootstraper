@@ -377,7 +377,7 @@ log_info "Generating per-node configs for control plane nodes..."
 for NODE in "${TALOS_CONTROL_NODES[@]}"; do
   NODE_HOSTNAME=$(echo "$NODE" | cut -d'.' -f1)
   NODE_CONFIG_FILE="$RENDERED_DIR/talos/controlplane-${NODE_HOSTNAME}.yaml"
-  generate_node_config "$NODE" "$OVERLAY_DIR/talos/controlplane.yaml" "$NODE_CONFIG_FILE" \
+  generate_node_config "$NODE" "$OVERLAY_DIR/talos/controlplane.yaml" "$NODE_CONFIG_FILE" "$OVERLAY_DIR" \
     ${TALOS_APPEND_MANIFESTS_CONTROL_NODES[@]+"${TALOS_APPEND_MANIFESTS_CONTROL_NODES[@]}"}
 done
 
@@ -386,7 +386,7 @@ if [[ ${#TALOS_WORKER_NODES[@]} -gt 0 ]]; then
   for NODE in "${TALOS_WORKER_NODES[@]}"; do
     NODE_HOSTNAME=$(echo "$NODE" | cut -d'.' -f1)
     NODE_CONFIG_FILE="$RENDERED_DIR/talos/worker-${NODE_HOSTNAME}.yaml"
-    generate_node_config "$NODE" "$OVERLAY_DIR/talos/worker.yaml" "$NODE_CONFIG_FILE"
+    generate_node_config "$NODE" "$OVERLAY_DIR/talos/worker.yaml" "$NODE_CONFIG_FILE" "$OVERLAY_DIR"
   done
 fi
 
