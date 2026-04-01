@@ -193,7 +193,6 @@ if [[ -d "${RENDERED_OVERLAY_DIR}/kubevirt" ]]; then
     log_info "KubeVirt operator already installed, skipping installation."
   else
     log_info "Installing KubeVirt operator ${KUBEVIRT_VERSION}..."
-    kubectl create namespace "${KUBEVIRT_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
     kubectl apply -f "https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/kubevirt-operator.yaml"
     log_info "Waiting for KubeVirt operator to be ready..."
     kubectl wait --for=condition=Available deployment/virt-operator -n "${KUBEVIRT_NAMESPACE}" --timeout=300s
