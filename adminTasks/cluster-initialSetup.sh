@@ -145,26 +145,38 @@ if [[ "${TALOS_PXE_ENABLED:-false}" == "true" ]]; then
   NODES_READY=()
   NODES_NEED_PXE=()
 
-  # Pre-check: probe each node to see if it's already reachable (maintenance, booting, or running)
+  # Pre-check: probe all nodes in parallel to see if they're already reachable
   # This allows re-running the script without blocking on PXE boot for already-deployed nodes
+  PROBE_TMPDIR=$(mktemp -d)
   for NODE in "${ALL_NODES[@]}"; do
-    set +e
-    # Try with talosconfig first (works for bootstrapped nodes), fall back to --insecure (maintenance mode)
-    STATUS=$(talosctl get machinestatus --nodes "$NODE" --endpoints "$NODE" 2>&1 &
-             PID=$!; sleep 2 && kill "$PID" 2>/dev/null & wait "$PID")
-    if [[ $? -ne 0 ]]; then
-      STATUS=$(talosctl get machinestatus --nodes "$NODE" --endpoints "$NODE" --insecure 2>&1 &
+    (
+      set +e
+      # Try with talosconfig first (works for bootstrapped nodes), fall back to --insecure (maintenance mode)
+      STATUS=$(talosctl get machinestatus --nodes "$NODE" --endpoints "$NODE" 2>&1 &
                PID=$!; sleep 2 && kill "$PID" 2>/dev/null & wait "$PID")
-    fi
-    set -e
+      if [[ $? -ne 0 ]]; then
+        STATUS=$(talosctl get machinestatus --nodes "$NODE" --endpoints "$NODE" --insecure 2>&1 &
+                 PID=$!; sleep 2 && kill "$PID" 2>/dev/null & wait "$PID")
+      fi
+      if echo "$STATUS" | grep -qi "maintenance\|booting\|running"; then
+        echo "ready"
+      else
+        echo "pxe"
+      fi
+    ) > "$PROBE_TMPDIR/${NODE}" &
+  done
+  wait
 
-    if echo "$STATUS" | grep -qi "maintenance\|booting\|running"; then
+  for NODE in "${ALL_NODES[@]}"; do
+    RESULT=$(cat "$PROBE_TMPDIR/${NODE}" 2>/dev/null || echo "pxe")
+    if [[ "$RESULT" == "ready" ]]; then
       log_success "Node $NODE is already reachable (skipping PXE boot)."
       NODES_READY+=("$NODE")
     else
       NODES_NEED_PXE+=("$NODE")
     fi
   done
+  rm -rf "$PROBE_TMPDIR"
 
   if [[ ${#NODES_NEED_PXE[@]} -eq 0 ]]; then
     log_success "All ${#ALL_NODES[@]} nodes are already reachable. Skipping PXE boot."
@@ -194,6 +206,20 @@ if [[ "${TALOS_PXE_ENABLED:-false}" == "true" ]]; then
           log_success "Node $NODE is in maintenance mode."
           NODES_READY+=("$NODE")
         fi
+
+        # Recheck if node has already booted (reachable with talosconfig) - if so, add to ready list to avoid blocking on PXE boot
+        # Skip if the previous check timed out — the node is unreachable, no point trying the authenticated endpoint
+        if ! echo "$STATUS" | grep -qi "context deadline exceeded"; then
+          set +e
+          STATUS=$(talosctl get machinestatus --nodes "$NODE" --endpoints "$NODE" --talosconfig "$TALOSCONFIG" -o jsonpath='{.spec.status.ready}' 2>&1)
+          set -e
+        fi
+
+        if [[ "$STATUS" == "true" ]]; then
+          log_success "Node $NODE is already ready"
+          NODES_READY+=("$NODE")
+        fi
+
       done
 
       if [[ ${#NODES_READY[@]} -lt ${#ALL_NODES[@]} ]]; then
@@ -205,7 +231,8 @@ if [[ "${TALOS_PXE_ENABLED:-false}" == "true" ]]; then
           exit 4
         fi
         REMAINING=$((${#ALL_NODES[@]} - ${#NODES_READY[@]}))
-        log_info "Waiting for $REMAINING more node(s)... (${ELAPSED}s elapsed)"
+        PENDING_NODES=$(comm -23 <(printf '%s\n' "${NODES_NEED_PXE[@]}" | sort) <(printf '%s\n' ${NODES_READY[@]+"${NODES_READY[@]}"} | sort) | tr '\n' ' ')
+        log_info "Waiting for $REMAINING more node(s): ${PENDING_NODES}(${ELAPSED}s elapsed)"
         sleep 5
       fi
     done
@@ -375,7 +402,6 @@ else
   log_info "Applying Talos config to controlplane nodes"
 fi
 
-CLUSTER_ALREADY_BOOTSTRAPPED=true
 for NODE in "${TALOS_CONTROL_NODES[@]}"; do
   NODE_HOSTNAME=$(echo "$NODE" | cut -d'.' -f1)
   NODE_CONFIG_FILE="$RENDERED_DIR/talos/controlplane-${NODE_HOSTNAME}.yaml"
@@ -383,11 +409,8 @@ for NODE in "${TALOS_CONTROL_NODES[@]}"; do
   log_info "  Applying Talos config to controlplane node $NODE from $NODE_CONFIG_FILE..."
   apply_talos_config "$NODE" "$NODE_CONFIG_FILE" "$DIFF_MODE"
 
-  if [[ "$DIFF_MODE" != "true" ]]; then
-    NODE_STATUS=$(wait_for_node_ready "$NODE" "${PREPARING_TIMEOUT:-300}") || exit 4
-    if [[ "$NODE_STATUS" == "booting" ]]; then
-      CLUSTER_ALREADY_BOOTSTRAPPED=false
-    fi
+  if [[ "$DIFF_MODE" != "true" ]]; then 
+    wait_for_node_ready "$NODE" "${PREPARING_TIMEOUT:-300}" || exit 4
   fi
 done
 
@@ -408,19 +431,50 @@ fi
 # ============================================================================
 # FETCH KUBECONFIG
 # ============================================================================
-fetch_kubeconfig "${TALOS_CONTROL_NODES[0]}" || exit 6
+KUBECONFIG_FETCHED=false
+for NODE in "${TALOS_CONTROL_NODES[@]}"; do
+  if fetch_kubeconfig "$NODE"; then
+    KUBECONFIG_FETCHED=true
+    break
+  fi
+  log_warn "Failed to fetch kubeconfig from $NODE, trying next control node..."
+done
+if [[ "$KUBECONFIG_FETCHED" != "true" ]]; then
+  log_error "Failed to fetch kubeconfig from any control node."
+  exit 6
+fi
 
 # ============================================================================
 # BOOTSTRAP CLUSTER
 # ============================================================================
 
-if [ "$CLUSTER_ALREADY_BOOTSTRAPPED" = true ]; then
-  log_info "Cluster already bootstrapped, skipping bootstrap step."
-
+log_info "Running bootstrap..."
+BOOTSTRAP_MAX_ATTEMPTS=10
+BOOTSTRAP_STATUS=0
+BOOTSTRAP_OUTPUT=""
+for _BOOTSTRAP_ATTEMPT in $(seq 1 "$BOOTSTRAP_MAX_ATTEMPTS"); do
+  set +e
+  BOOTSTRAP_OUTPUT=$(talosctl --nodes "${TALOS_CONTROL_NODES[0]}" bootstrap 2>&1)
+  BOOTSTRAP_STATUS=$?
+  set -e
+  if echo "$BOOTSTRAP_OUTPUT" | grep -qi "bootstrap is not available yet"; then
+    log_warn "Bootstrap not available yet (attempt ${_BOOTSTRAP_ATTEMPT}/${BOOTSTRAP_MAX_ATTEMPTS}), retrying in 5s..."
+    sleep 5
+    continue
+  fi
+  break
+done
+if echo "$BOOTSTRAP_OUTPUT" | grep -qi "bootstrap is not available yet"; then
+  log_error "Bootstrap not available after ${BOOTSTRAP_MAX_ATTEMPTS} attempts."
+  exit 1
+fi
+if [ $BOOTSTRAP_STATUS -eq 0 ]; then
+  log_success "Cluster bootstrapped successfully."
+elif echo "$BOOTSTRAP_OUTPUT" | grep -qi "etcd data directory is not empty"; then
+  log_info "Cluster already bootstrapped (etcd data directory is not empty)."
 else
-  log_info "Cluster not yet bootstrapped, proceeding with bootstrap step."
-  talosctl --nodes "${TALOS_CONTROL_NODES[0]}" bootstrap
-
+  log_error "Bootstrap failed: $BOOTSTRAP_OUTPUT"
+  exit $BOOTSTRAP_STATUS
 fi
 
 # ============================================================================

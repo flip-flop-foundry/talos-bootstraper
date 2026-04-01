@@ -70,6 +70,20 @@
         "clear": true
       },
       "problemMatcher": []
+    },
+    {
+      "label": "Reset Talos Node System Volumes",
+      "type": "shell",
+      "command": "${workspaceFolder}/.vscode/tasks/reset-talos-nodes.sh",
+      "args": ["${input:envFile}"],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true,
+        "focus": true
+      },
+      "problemMatcher": []
     }
   ],
   "inputs": [
