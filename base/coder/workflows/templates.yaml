@@ -1,0 +1,61 @@
+# Gitea Actions workflow: push Coder workspace templates whenever the rendered
+# template files change. Flattened into the env repo's .gitea/workflows/ by
+# render-overlay.sh (prefixed with the component name) + push-to-gitea.sh.
+#
+# Required Gitea repo secrets (see base/coder/README.md):
+#   CODER_URL            e.g. https://coder.<cluster-domain>
+#   CODER_SESSION_TOKEN  a Coder API token for a user allowed to push templates
+#
+# NOTE ON RENDERING: render-overlay.sh runs envsubst with a whitelist, so the
+# ${{ secrets.* }} expressions are preserved. The shell loop variables use the
+# unlikely-to-collide ct_* prefix so envsubst (which only substitutes whitelisted
+# exported env-file vars) leaves them untouched. The Coder CLI version is pinned
+# to the control-plane image tag (${CODER_IMAGE_TAG}) at render time.
+
+name: Push Coder Templates
+
+on:
+  push:
+    paths:
+      - "_rendered/coder/templates/**"
+
+jobs:
+  push-templates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify required secrets
+        run: |
+          if [ -z "${{ secrets.CODER_URL }}" ] || [ -z "${{ secrets.CODER_SESSION_TOKEN }}" ]; then
+            echo "ERROR: CODER_URL and/or CODER_SESSION_TOKEN repo secrets are not configured."
+            echo "       See base/coder/README.md -> 'Template CI credentials'."
+            exit 1
+          fi
+
+      - name: Install Coder CLI
+        run: |
+          # Pin the CLI to the control-plane version to avoid drift and reduce
+          # supply-chain risk from installing whatever 'latest' happens to be.
+          curl -fsSL https://coder.com/install.sh | sh -s -- --version "${CODER_IMAGE_TAG}"
+          coder version
+
+      - name: Authenticate to Coder
+        run: |
+          coder login "${{ secrets.CODER_URL }}" --token "${{ secrets.CODER_SESSION_TOKEN }}"
+
+      - name: Push templates
+        run: |
+          set -eu
+          ct_rev="$(git rev-parse --short HEAD)"
+          for ct_dir in _rendered/coder/templates/*/; do
+            [ -d "$ct_dir" ] || continue
+            ct_name="$(basename "$ct_dir")"
+            echo "Pushing template '$ct_name' from '$ct_dir' (version $ct_rev)"
+            coder templates push "$ct_name" \
+              --directory "$ct_dir" \
+              --name "$ct_rev" \
+              --message "Automated push from Gitea Actions ($ct_rev)" \
+              --yes
+          done
