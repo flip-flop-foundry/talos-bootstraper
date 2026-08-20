@@ -22,6 +22,12 @@ coder:
       cpu: 2000m
       memory: 2Gi
 
+  # fsGroup so the non-root (UID 1000) coder process can read the mounted CNPG
+  # client cert + CA secret volumes: with fsGroup set, the kubelet group-owns the
+  # volume files to 1000 and OR's in group read (same mechanism Gitea relies on).
+  podSecurityContext:
+    fsGroup: 1000
+
   # hostUsers: false (user-namespace isolation) is NOT settable via this chart:
   # it only exposes podSecurityContext (-> spec.securityContext), whereas hostUsers
   # is a pod-spec sibling. Tracked in coderDeferredWork.md; no post-renderer per policy.
