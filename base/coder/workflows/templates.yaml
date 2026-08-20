@@ -20,6 +20,7 @@
 name: Push Coder Templates
 
 on:
+  workflow_dispatch:
   push:
     paths:
       - "_rendered/coder/templates/**"
@@ -27,7 +28,22 @@ on:
 jobs:
   push-templates:
     runs-on: ubuntu-latest
+    container:
+        image: ghcr.io/catthehacker/ubuntu:act-latest
+        volumes:
+            - /etc/ssl/certs:/host-ssl-certs:ro
     steps:
+      - name: 🔒 Install custom CA certificate
+        run: |
+          if [ ! -f /host-ssl-certs/cluster-ca.crt ]; then
+            echo "ERROR: Missing CA certificate: /host-ssl-certs/cluster-ca.crt"
+            echo "Expected source file on runner host: /etc/ssl/certs/cluster-ca.crt"
+            echo "This workflow mounts host /etc/ssl/certs -> container /host-ssl-certs (read-only)."
+            exit 1
+          fi
+          cp /host-ssl-certs/cluster-ca.crt /usr/local/share/ca-certificates/cluster-ca.crt
+          update-ca-certificates
+
       - name: Checkout
         uses: actions/checkout@v4
 

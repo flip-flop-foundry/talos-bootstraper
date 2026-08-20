@@ -48,7 +48,7 @@ code and improve talos-bootstrapper without setting up a local toolchain.
    Coder starts even before this is set (GitHub login simply stays disabled),
    thanks to the `optional: true` secret references.
 
-2. **Break-glass owner (automated).** The `coderOwnerBootstrapJob` PostSync hook
+2. **Break-glass owner (automated, implemented).** The `coderOwnerBootstrapJob` PostSync hook
    seeds the first Coder owner automatically once the control plane is healthy —
    username `admin`, email `admin@${CODER_DOMAIN_NAME}`, with a randomly
    generated password written back into the `coder-owner-bootstrap` secret.
