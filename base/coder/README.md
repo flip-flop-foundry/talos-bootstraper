@@ -71,18 +71,21 @@ manual OAuth-app or token step.
 
 3. **Template CI credentials (automated).** The "Push Coder Templates" workflow
    needs a Coder API token as the `CODER_SESSION_TOKEN` repo secret. This is
-   published automatically: `gitea-bootstrap.sh` stages a short-lived, scoped
-   Gitea CI credential (`coder-gitea-ci` secret) and the `coderOwnerBootstrapJob`
-   mints a Coder token, publishes it to the repo, then **revokes the CI token and
-   deletes the secret** — no standing credential is left in the coder namespace.
-   The Coder URL is rendered into the workflow from `${CODER_DOMAIN_NAME}`, so no
-   `CODER_URL` secret is required.
+   published automatically without ever staging a Gitea credential into the coder
+   namespace: `gitea-bootstrap.sh` drops a non-sensitive request marker
+   (`coder-session-token-request` ConfigMap), the `coderOwnerBootstrapJob` mints a
+   Coder token and writes it to the `coder-session-token-out` secret, and
+   `gitea-bootstrap.sh` — using the Gitea **admin** token, which never leaves the
+   devenv — publishes it to the repo and deletes both the outbox secret and the
+   request marker. The Coder URL is rendered into the workflow from
+   `${CODER_DOMAIN_NAME}`, so no `CODER_URL` secret is required.
 
-   Because Gitea only lets a repo/org **owner** write Actions secrets, the CI user
-   (`coder-ci`) is briefly made an org owner to publish the secret, then deleted
-   on the next bootstrap once `CODER_SESSION_TOKEN` is confirmed published. To
-   force a re-publish (e.g. the stored token was revoked), delete the
-   `CODER_SESSION_TOKEN` repo secret in Gitea and re-run **Apply Overlay**.
+   Because the Coder token can only be minted after Coder is up (asynchronous on a
+   greenfield cluster), the publish is eventually-consistent: if Coder is not yet
+   available, the marker is left in place and `CODER_SESSION_TOKEN` is published on
+   the first **Apply Overlay** that runs once Coder is healthy. To force a
+   re-publish (e.g. the stored token was revoked), delete the `CODER_SESSION_TOKEN`
+   repo secret in Gitea and re-run **Apply Overlay**.
 
 ### Restarting after a secret change
 

@@ -9,14 +9,15 @@
 #   3. otherwise creates the owner via the unauthenticated bootstrap endpoint
 #      POST /api/v2/users/first with a securely generated random password,
 #   4. persists email/username/password into the `coder-owner-bootstrap` secret,
-#   5. if gitea-bootstrap.sh staged an ephemeral `coder-gitea-ci` credential,
-#      mints a Coder API token, publishes it as the CODER_SESSION_TOKEN repo
-#      Actions secret in Gitea, then revokes the CI token and deletes the secret.
+#   5. if gitea-bootstrap.sh requested one (ConfigMap `coder-session-token-request`),
+#      mints a Coder API token and writes it to the `coder-session-token-out` secret.
+#      gitea-bootstrap.sh — not this Job — publishes it to Gitea with its admin token,
+#      so no Gitea credential is ever staged into the coder namespace.
 #
 # Idempotent: reruns on every sync. Owner creation only acts when no owner exists;
-# token publishing only acts while the ephemeral coder-gitea-ci secret is present
-# (deleted after first success). If a password is already stored in the secret it
-# is reused, so the stored value stays valid even if the user is recreated.
+# token minting only acts while a request marker is present and no outbox exists yet.
+# If a password is already stored in the secret it is reused, so the stored value
+# stays valid even if the user is recreated.
 ###############################################################################
 apiVersion: v1
 kind: ServiceAccount
@@ -47,12 +48,18 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create"]
-  # The ephemeral CI credential staged by gitea-bootstrap.sh: read it to publish
-  # CODER_SESSION_TOKEN, then delete it so no standing credential is left behind.
+  # Token-publish plumbing: read the request marker (ConfigMap) to know a token is
+  # wanted, and read the outbox Secret to avoid re-minting. The outbox is created
+  # via the broad "create" rule above; gitea-bootstrap.sh (not this Job) does the
+  # Gitea write and deletes both afterwards.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["coder-session-token-request"]
+    verbs: ["get"]
   - apiGroups: [""]
     resources: ["secrets"]
-    resourceNames: ["coder-gitea-ci"]
-    verbs: ["get", "delete"]
+    resourceNames: ["coder-session-token-out"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -191,14 +198,20 @@ spec:
                 echo "Stored owner credentials in secret ${NS}/${SECRET} (username=${USERNAME}, email=${EMAIL})."
               fi
 
-              # 6. Publish CODER_SESSION_TOKEN to Gitea, if gitea-bootstrap.sh staged
-              #    an ephemeral CI credential. This Job is the only point where both
-              #    Coder and Gitea are up, so the token is minted and pushed here.
-              if ! kubectl get secret coder-gitea-ci -n "${NS}" >/dev/null 2>&1; then
-                echo "No coder-gitea-ci secret; CODER_SESSION_TOKEN already published or CI not configured. Done."
+              # 6. Produce a Coder API token for CODER_SESSION_TOKEN, IF the
+              #    orchestrator (gitea-bootstrap.sh) requested one. This Job never
+              #    holds a Gitea credential — it writes the minted key to an outbox
+              #    secret and gitea-bootstrap.sh performs the Gitea write with its
+              #    admin token on this or a later apply.
+              if ! kubectl get configmap coder-session-token-request -n "${NS}" >/dev/null 2>&1; then
+                echo "No token-publish request; nothing to mint. Done."
                 exit 0
               fi
-              echo "Ephemeral CI credential present; publishing CODER_SESSION_TOKEN to Gitea."
+              if kubectl get secret coder-session-token-out -n "${NS}" >/dev/null 2>&1; then
+                echo "Outbox secret already present; awaiting orchestrator publish. Done."
+                exit 0
+              fi
+              echo "Publish requested; minting a Coder API token for the outbox."
 
               # 6a. Need the owner password to mint a Coder token.
               PASSWORD="$(kubectl get secret "${SECRET}" -n "${NS}" \
@@ -238,38 +251,15 @@ spec:
                 exit 1
               fi
 
-              # 6c. Read the ephemeral Gitea CI credential.
-              get_ci() { kubectl get secret coder-gitea-ci -n "${NS}" -o "jsonpath={.data.${1}}" 2>/dev/null | base64 -d 2>/dev/null; }
-              GT_TOKEN="$(get_ci token)"; GT_TOKEN_ID="$(get_ci token-id)"
-              GT_API="$(get_ci api-url)"; GT_ORG="$(get_ci org)"; GT_REPO="$(get_ci repo)"
-              GT_USER="$(get_ci username)"; GT_PASS="$(get_ci password)"
-
-              # 6d. Publish the Coder token as a repo Actions secret. Gitea uses the
-              #     private cluster CA; -k trusts it in-cluster (as gitea-bootstrap.sh does).
-              put_code="$(curl -k -sS -o /dev/null -w '%{http_code}' -X PUT \
-                -H "Authorization: token ${GT_TOKEN}" -H 'Content-Type: application/json' \
-                -d "$(jq -n --arg d "${coder_key}" '{data:$d}')" \
-                "${GT_API}/repos/${GT_ORG}/${GT_REPO}/actions/secrets/CODER_SESSION_TOKEN")"
-              case "${put_code}" in
-                201|204) echo "Published CODER_SESSION_TOKEN to ${GT_ORG}/${GT_REPO}." ;;
-                *) echo "ERROR: failed to publish CODER_SESSION_TOKEN (HTTP ${put_code})." >&2; exit 1 ;;
-              esac
-
-              # 6e. Revoke the now-unneeded Gitea CI token and delete the ephemeral
-              #     secret so no standing credential remains in the coder namespace.
-              #     If revocation fails the k8s secret is still deleted; the orphaned
-              #     token is low-risk (ephemeral, scoped to write:repository on one
-              #     repo) and is superseded on the next successful bootstrap.
-              rev_code="$(curl -k -sS -o /dev/null -w '%{http_code}' -X DELETE \
-                -u "${GT_USER}:${GT_PASS}" \
-                "${GT_API}/users/${GT_USER}/tokens/${GT_TOKEN_ID}" || true)"
-              if [ "${rev_code}" = "204" ]; then
-                echo "Revoked the ephemeral Gitea CI token."
-              else
-                echo "WARN: could not revoke Gitea CI token (HTTP ${rev_code}); deleting secret anyway." >&2
-              fi
-              kubectl delete secret coder-gitea-ci -n "${NS}" --ignore-not-found
-              echo "Removed ephemeral secret ${NS}/coder-gitea-ci. CODER_SESSION_TOKEN wiring complete."
+              # 6c. Hand the minted key to the orchestrator via the outbox secret.
+              #     gitea-bootstrap.sh reads it, PUTs CODER_SESSION_TOKEN with the
+              #     Gitea admin token, then deletes the outbox + request marker.
+              #     The top-of-step guard guarantees the outbox does not exist yet;
+              #     if a concurrent run raced us, create fails and the Job retries
+              #     (next run exits cleanly at the outbox-present guard).
+              kubectl create secret generic coder-session-token-out -n "${NS}" \
+                --type=Opaque --from-literal=key="${coder_key}"
+              echo "Wrote minted Coder token to ${NS}/coder-session-token-out for publishing."
           resources:
             requests:
               cpu: 10m
