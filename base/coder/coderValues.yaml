@@ -13,12 +13,6 @@ coder:
   annotations:
     reloader.stakater.com/auto: "true"
 
-  priorityClassName: "cluster-services"
-
-  tolerations:
-    - key: "node-role.kubernetes.io/control-plane"
-      operator: "Exists"
-      effect: "NoSchedule"
 
   resources:
     requests:
@@ -28,6 +22,9 @@ coder:
       cpu: 2000m
       memory: 2Gi
 
+  # hostUsers: false (user-namespace isolation) is NOT settable via this chart:
+  # it only exposes podSecurityContext (-> spec.securityContext), whereas hostUsers
+  # is a pod-spec sibling. Tracked in coderDeferredWork.md; no post-renderer per policy.
   # Container-level hardening. runAsNonRoot/runAsUser default to 1000 in the chart.
   securityContext:
     runAsNonRoot: true

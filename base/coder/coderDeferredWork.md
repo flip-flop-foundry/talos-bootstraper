@@ -60,20 +60,30 @@ deployment. Each item is safe to defer; none blocks a working deployment.
   owner from the `coder-owner-bootstrap` secret automatically, instead of the
   current manual `coder server create-admin-user` step.
 
-## Set hostUsers: false on workspace pods (user namespaces)
+## Set hostUsers: false on Coder pods (user namespaces)
 
-- We want workspace pods to run with `hostUsers: false` for user-namespace
-  isolation (https://kubernetes.io/docs/concepts/workloads/pods/user-namespaces/).
-  The workspace pod in `templates/k8s-dev-image/main.tf` is a
-  `kubernetes_pod` resource, and the hashicorp/kubernetes provider does not yet
-  expose the pod-spec `hostUsers` field:
+We want Coder pods to run with `hostUsers: false` for user-namespace isolation
+(https://kubernetes.io/docs/concepts/workloads/pods/user-namespaces/). Neither
+the control plane nor the workspace pods can get it inline today:
+
+- **Control plane (Helm)** — the `oci://ghcr.io/coder/chart/coder` chart only
+  exposes `coder.podSecurityContext` (rendered as `spec.securityContext`), while
+  `hostUsers` is a pod-spec sibling of `securityContext`. There is no pod-spec
+  passthrough value, so it cannot be set via `coderValues.yaml`. Per project
+  policy we do not add a post-renderer for this.
+- **Workspace pods (Terraform)** — the pod in `templates/k8s-dev-image/main.tf`
+  is a `kubernetes_pod` resource, and the hashicorp/kubernetes provider does not
+  yet expose the pod-spec `hostUsers` field:
   - https://github.com/hashicorp/terraform-provider-kubernetes/issues/2818
   - https://github.com/hashicorp/terraform-provider-kubernetes/pull/2828
-- Options once the field lands (or if we revisit sooner):
-  - Bump the provider and add `host_users = false` to the pod `spec` directly.
-  - Convert the pod to a `kubernetes_manifest` resource (accepts arbitrary
-    fields), but note it handles values only known at apply time (the Coder
-    agent token / init script) poorly — validate on a live cluster first.
-  - Enforce it cluster-side via a mutating admission webhook (e.g. Kyverno) that
-    injects `spec.hostUsers: false` on pods in the workspaces namespace,
-    independent of the Terraform provider.
+
+- Options once the fields land (or if we revisit sooner):
+  - Control plane: upstream the `hostUsers` value into the Coder chart, or wait
+    for the chart to add it.
+  - Workspaces: bump the provider and add `host_users = false` to the pod `spec`
+    directly, or convert the pod to a `kubernetes_manifest` resource (accepts
+    arbitrary fields, but handles values only known at apply time — the Coder
+    agent token / init script — poorly; validate on a live cluster first).
+  - Both: enforce it cluster-side via a mutating admission webhook (e.g. Kyverno)
+    that injects `spec.hostUsers: false` on Coder pods, independent of the chart
+    and the Terraform provider.
