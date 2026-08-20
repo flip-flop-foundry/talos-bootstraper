@@ -6,11 +6,16 @@
 #   CODER_URL            e.g. https://coder.<cluster-domain>
 #   CODER_SESSION_TOKEN  a Coder API token for a user allowed to push templates
 #
-# NOTE ON RENDERING: render-overlay.sh runs envsubst with a whitelist, so the
-# ${{ secrets.* }} expressions are preserved. The shell loop variables use the
-# unlikely-to-collide ct_* prefix so envsubst (which only substitutes whitelisted
-# exported env-file vars) leaves them untouched. The Coder CLI version is pinned
-# to the control-plane image tag (${CODER_IMAGE_TAG}) at render time.
+# NOTE ON RENDERING: render-overlay.sh runs envsubst with a whitelist that
+# contains ONLY the variables exported by the env file. Consequently:
+#   - ${CODER_IMAGE_TAG} IS whitelisted, so it is substituted at render time and
+#     pins the Coder CLI to the control-plane version.
+#   - ${{ secrets.* }} are NOT whitelisted, so they pass through verbatim for
+#     Gitea Actions to resolve at run time.
+#   - The shell loop variables use the ct_* prefix precisely because they are
+#     also not whitelisted; the prefix guards against the (unlikely) case where
+#     an operator exports a plain name like `dir`/`name`/`rev` in the env file,
+#     which envsubst would otherwise wrongly substitute here.
 
 name: Push Coder Templates
 

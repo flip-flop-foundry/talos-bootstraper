@@ -91,6 +91,11 @@ resource "kubernetes_pod" "workspace" {
     }
   }
   spec {
+    # NOTE: We want `hostUsers = false` here for user-namespace isolation, but the
+    # hashicorp/kubernetes provider's kubernetes_pod does not yet expose that field.
+    # Tracked in coderDeferredWork.md. See:
+    #   https://github.com/hashicorp/terraform-provider-kubernetes/issues/2818
+    #   https://github.com/hashicorp/terraform-provider-kubernetes/pull/2828
     security_context {
       run_as_non_root = true
       run_as_user     = 1000

@@ -52,3 +52,28 @@ deployment. Each item is safe to defer; none blocks a working deployment.
   downloaded binary are not checksum-verified. Harden by pinning `install.sh` to
   a known-good release and verifying the CLI binary's published SHA256 (or vendor
   the CLI into a runner image) before running it in CI.
+
+
+## Automate setup of coder-owner-bootstrap
+
+- Use logic similar to the Longhorn credentials setup to seed the first Coder
+  owner from the `coder-owner-bootstrap` secret automatically, instead of the
+  current manual `coder server create-admin-user` step.
+
+## Set hostUsers: false on workspace pods (user namespaces)
+
+- We want workspace pods to run with `hostUsers: false` for user-namespace
+  isolation (https://kubernetes.io/docs/concepts/workloads/pods/user-namespaces/).
+  The workspace pod in `templates/k8s-dev-image/main.tf` is a
+  `kubernetes_pod` resource, and the hashicorp/kubernetes provider does not yet
+  expose the pod-spec `hostUsers` field:
+  - https://github.com/hashicorp/terraform-provider-kubernetes/issues/2818
+  - https://github.com/hashicorp/terraform-provider-kubernetes/pull/2828
+- Options once the field lands (or if we revisit sooner):
+  - Bump the provider and add `host_users = false` to the pod `spec` directly.
+  - Convert the pod to a `kubernetes_manifest` resource (accepts arbitrary
+    fields), but note it handles values only known at apply time (the Coder
+    agent token / init script) poorly — validate on a live cluster first.
+  - Enforce it cluster-side via a mutating admission webhook (e.g. Kyverno) that
+    injects `spec.hostUsers: false` on pods in the workspaces namespace,
+    independent of the Terraform provider.
