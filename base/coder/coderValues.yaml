@@ -56,14 +56,20 @@ coder:
     enable: true
     className: "traefik"
     host: ${CODER_DOMAIN_NAME}
+    # Wildcard host for subdomain apps + dashboard port-forwarding (coder_app
+    # subdomain=true). Apps resolve at <app>.${CODER_DOMAIN_NAME}.
+    wildcardHost: "*.${CODER_DOMAIN_NAME}"
     annotations:
       cert-manager.io/cluster-issuer: ${TALOS_CLUSTER_NAME}-ca-issuer
       cert-manager.io/common-name: ${CODER_DOMAIN_NAME}
-      external-dns.alpha.kubernetes.io/hostname: "${CODER_DOMAIN_NAME}"
+      external-dns.alpha.kubernetes.io/hostname: "${CODER_DOMAIN_NAME},*.${CODER_DOMAIN_NAME}"
       advertise-via-dns: "true"
     tls:
       enable: true
       secretName: cert-${CODER_DOMAIN_NAME}  # Created by cert-manager
+      # cert-manager issues *.${CODER_DOMAIN_NAME} from the CA issuer (CA signs
+      # wildcards directly; no DNS-01 needed).
+      wildcardSecretName: cert-wildcard-${CODER_DOMAIN_NAME}
 
   # readOnlyRootFilesystem requires a writable cache/tmp dir.
   volumes:
@@ -105,6 +111,13 @@ coder:
   env:
     - name: CODER_ACCESS_URL
       value: "https://${CODER_DOMAIN_NAME}"
+    # Enables subdomain apps + dashboard port-forwarding. Must resolve to Coder
+    # (DNS wildcard *.${CODER_DOMAIN_NAME}) and is covered by wildcardSecretName above.
+    - name: CODER_WILDCARD_ACCESS_URL
+      value: "*.${CODER_DOMAIN_NAME}"
+    # With wildcard apps available, force subdomain isolation and drop path-based apps.
+    - name: CODER_DISABLE_PATH_APPS
+      value: "true"
     - name: CODER_CACHE_DIRECTORY
       value: /tmp/coder-cache
     # Postgres connection URL from the CNPG-generated `coder-sql-app` secret.

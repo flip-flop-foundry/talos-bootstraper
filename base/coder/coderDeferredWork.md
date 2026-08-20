@@ -42,7 +42,11 @@ deployment. Each item is safe to defer; none blocks a working deployment.
 
 - The template starts the Coder agent but does not install/expose an IDE
   `coder_app` (e.g. code-server / JetBrains Gateway). Add one once the preferred
-  editor for the dev image is decided.
+  editor for the dev image is decided. Any `coder_app` must set
+  `subdomain = true`: path-based apps are disabled cluster-wide
+  (`CODER_DISABLE_PATH_APPS=true`), so an app without a subdomain will not be
+  reachable. Subdomain apps are served under `*.${CODER_DOMAIN_NAME}` via the
+  wildcard ingress.
 
 ## Coder CLI install supply-chain hardening
 
