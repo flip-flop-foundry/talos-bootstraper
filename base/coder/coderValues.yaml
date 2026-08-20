@@ -9,7 +9,7 @@ coder:
     pullPolicy: IfNotPresent
 
   # Restart the deployment automatically when the referenced Secrets change
-  # (GitHub OAuth credentials, composed Postgres URL). Handled by Reloader.
+  # (Gitea OIDC / external-auth credentials, composed Postgres URL). Via Reloader.
   annotations:
     reloader.stakater.com/auto: "true"
 
@@ -143,24 +143,52 @@ coder:
       value: /pg-client-crt/tls.key
     - name: PGSSLROOTCERT
       value: /pg-ca-crt/ca.crt
-    # GitHub OAuth — credentials are admin-populated in the coder-github-oauth secret.
-    # Marked optional so Coder still starts (with GitHub OAuth disabled) before the
-    # admin fills them; use the break-glass owner to bootstrap in that window.
-    - name: CODER_OAUTH2_GITHUB_ALLOW_SIGNUPS
+    # --- Gitea OIDC (interactive login) -------------------------------------
+    # Coder authenticates users against Gitea's OIDC provider. client-id/secret are
+    # auto-provisioned into the coder-oidc secret by gitea-bootstrap.sh. Marked
+    # optional so Coder still starts (OIDC disabled) before the secret exists; use
+    # the break-glass owner to bootstrap in that window. Coder verifies Gitea's TLS
+    # via the cluster CA mounted at /etc/ssl/certs above.
+    - name: CODER_OIDC_ISSUER_URL
+      value: "https://${GITEA_DOMAIN_NAME}"
+    - name: CODER_OIDC_ALLOW_SIGNUPS
       value: "true"
-    - name: CODER_OAUTH2_GITHUB_ALLOWED_ORGS
-      value: "${CODER_OAUTH2_GITHUB_ALLOWED_ORGS}"
-    - name: CODER_OAUTH2_GITHUB_DEFAULT_PROVIDER_ENABLE
-      value: "false"  # Use our own GitHub OAuth app, not Coder's built-in default provider. Ie we authenticate towards GitHub using our own Github app, not Coder's Github App
-    - name: CODER_OAUTH2_GITHUB_CLIENT_ID
+    - name: CODER_OIDC_CLIENT_ID
       valueFrom:
         secretKeyRef:
-          name: coder-github-oauth
+          name: coder-oidc
           key: client-id
           optional: true
-    - name: CODER_OAUTH2_GITHUB_CLIENT_SECRET
+    - name: CODER_OIDC_CLIENT_SECRET
       valueFrom:
         secretKeyRef:
-          name: coder-github-oauth
+          name: coder-oidc
+          key: client-secret
+          optional: true
+    # --- Gitea external auth (git in workspaces) ----------------------------
+    # Lets workspaces clone/push Gitea repos through Coder's git credential helper.
+    # client-id/secret auto-provisioned into coder-external-auth by gitea-bootstrap.sh.
+    # AUTH_URL/TOKEN_URL/VALIDATE_URL are explicit because the built-in gitea type
+    # defaults to gitea.com.
+    - name: CODER_EXTERNAL_AUTH_0_ID
+      value: "gitea"
+    - name: CODER_EXTERNAL_AUTH_0_TYPE
+      value: "gitea"
+    - name: CODER_EXTERNAL_AUTH_0_AUTH_URL
+      value: "https://${GITEA_DOMAIN_NAME}/login/oauth/authorize"
+    - name: CODER_EXTERNAL_AUTH_0_TOKEN_URL
+      value: "https://${GITEA_DOMAIN_NAME}/login/oauth/access_token"
+    - name: CODER_EXTERNAL_AUTH_0_VALIDATE_URL
+      value: "https://${GITEA_DOMAIN_NAME}/api/v1/user"
+    - name: CODER_EXTERNAL_AUTH_0_CLIENT_ID
+      valueFrom:
+        secretKeyRef:
+          name: coder-external-auth
+          key: client-id
+          optional: true
+    - name: CODER_EXTERNAL_AUTH_0_CLIENT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: coder-external-auth
           key: client-secret
           optional: true

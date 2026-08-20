@@ -26,6 +26,15 @@ provider "coder" {}
 data "coder_workspace" "me" {}
 data "coder_workspace_owner" "me" {}
 
+# Gitea external auth: exposes a "Login with Gitea" button in the workspace UI and
+# lets the agent fetch OAuth tokens for git. optional=true so workspaces still
+# start before the user has authorized (the git helper is only wired up once a
+# token is available). Server side is configured via CODER_EXTERNAL_AUTH_0_* .
+data "coder_external_auth" "gitea" {
+  id       = "gitea"
+  optional = true
+}
+
 locals {
   namespace     = "${CODER_WORKSPACES_NAMESPACE}"
   workspace_name = lower("coder-${data.coder_workspace_owner.me.username}-${data.coder_workspace.me.name}")
@@ -36,8 +45,15 @@ resource "coder_agent" "main" {
   arch           = "amd64"
   startup_script = <<-EOT
     set -e
-    # The dev image ships the toolchain; just keep the agent alive and land the
-    # user in their persistent home directory.
+    # Pre-authenticate git to the cluster's Gitea via Coder external auth. The
+    # helper fetches a fresh token per git operation and is scoped to the Gitea
+    # host so credentials are never sent elsewhere. Only wired up once a token is
+    # available, so workspaces still start before the user authorizes Gitea.
+    if command -v coder >/dev/null 2>&1 && coder external-auth access-token gitea >/dev/null 2>&1; then
+      git config --global credential."https://${GITEA_DOMAIN_NAME}".helper \
+        '!f() { echo username=oauth2; echo "password=$(coder external-auth access-token gitea)"; }; f'
+    fi
+    # The dev image ships the toolchain; land the user in their persistent home.
     cd "$HOME"
   EOT
 

@@ -2,14 +2,14 @@
 # template files change. Flattened into the env repo's .gitea/workflows/ by
 # render-overlay.sh (prefixed with the component name) + push-to-gitea.sh.
 #
-# Required Gitea repo secrets (see base/coder/README.md):
-#   CODER_URL            e.g. https://coder.<cluster-domain>
-#   CODER_SESSION_TOKEN  a Coder API token for a user allowed to push templates
+# Required Gitea repo secrets (auto-provisioned; see base/coder/README.md):
+#   CODER_SESSION_TOKEN  a Coder API token, published automatically by the Coder
+#                        PostSync Job (coderOwnerBootstrapJob).
 #
 # NOTE ON RENDERING: render-overlay.sh runs envsubst with a whitelist that
 # contains ONLY the variables exported by the env file. Consequently:
-#   - ${CODER_IMAGE_TAG} IS whitelisted, so it is substituted at render time and
-#     pins the Coder CLI to the control-plane version.
+#   - ${CODER_IMAGE_TAG} and ${CODER_DOMAIN_NAME} ARE whitelisted, so they are
+#     substituted at render time (pinning the CLI version + Coder URL).
 #   - ${{ secrets.* }} are NOT whitelisted, so they pass through verbatim for
 #     Gitea Actions to resolve at run time.
 #   - The shell loop variables use the ct_* prefix precisely because they are
@@ -49,9 +49,10 @@ jobs:
 
       - name: Verify required secrets
         run: |
-          if [ -z "${{ secrets.CODER_URL }}" ] || [ -z "${{ secrets.CODER_SESSION_TOKEN }}" ]; then
-            echo "ERROR: CODER_URL and/or CODER_SESSION_TOKEN repo secrets are not configured."
-            echo "       See base/coder/README.md -> 'Template CI credentials'."
+          if [ -z "${{ secrets.CODER_SESSION_TOKEN }}" ]; then
+            echo "ERROR: CODER_SESSION_TOKEN repo secret is not configured."
+            echo "       It is published automatically by the Coder PostSync Job;"
+            echo "       see base/coder/README.md -> 'Template CI credentials'."
             exit 1
           fi
 
@@ -64,7 +65,7 @@ jobs:
 
       - name: Authenticate to Coder
         run: |
-          coder login "${{ secrets.CODER_URL }}" --token "${{ secrets.CODER_SESSION_TOKEN }}"
+          coder login "https://${CODER_DOMAIN_NAME}" --token "${{ secrets.CODER_SESSION_TOKEN }}"
 
       - name: Push templates
         run: |
