@@ -77,6 +77,12 @@ coder:
       configMap:
         name: cluster-ca-bundle
         defaultMode: 384
+    # World-readable copy of the cluster CA for the TLS trust store (coder runs as
+    # UID 1000; a 0600 mount would be unreadable to it).
+    - name: internal-ca-vol
+      configMap:
+        name: cluster-ca-bundle
+        defaultMode: 292  # 0444
   volumeMounts:
     - name: tmp
       mountPath: /tmp
@@ -86,6 +92,15 @@ coder:
     - name: psql-ca-cert-vol
       readOnly: true
       mountPath: /pg-ca-crt
+    # Trust the private cluster CA so coderd can verify its own Access URL / healthz
+    # (Traefik serves it with a ${TALOS_CLUSTER_NAME}-ca-issuer cert). Go reads every
+    # file in /etc/ssl/certs, so this augments the public roots rather than replacing
+    # them. Not settable via coder.certs.secrets: trust-manager emits a ConfigMap, not
+    # a Secret. See coder/coder#17979, #7194.
+    - name: internal-ca-vol
+      readOnly: true
+      mountPath: /etc/ssl/certs/cluster-internal-ca.crt
+      subPath: ca.crt
 
   env:
     - name: CODER_ACCESS_URL
@@ -117,7 +132,7 @@ coder:
     - name: CODER_OAUTH2_GITHUB_ALLOWED_ORGS
       value: "${CODER_OAUTH2_GITHUB_ALLOWED_ORGS}"
     - name: CODER_OAUTH2_GITHUB_DEFAULT_PROVIDER_ENABLE
-      value: "false"  # Use our own GitHub OAuth app, not Coder's built-in default provider
+      value: "false"  # Use our own GitHub OAuth app, not Coder's built-in default provider. Ie we authenticate towards GitHub using our own Github app, not Coder's Github App
     - name: CODER_OAUTH2_GITHUB_CLIENT_ID
       valueFrom:
         secretKeyRef:
