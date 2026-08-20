@@ -106,6 +106,39 @@ resource "kubernetes_pod" "workspace" {
     }
     automount_service_account_token = false
 
+    # Build a combined CA bundle (image's system roots + private cluster CA) into
+    # an emptyDir. Needed because the agent-bootstrap curl reads the bundle FILE
+    # (not the /etc/ssl/certs dir), so a bare file-drop that the Go agent would
+    # trust is not enough for the initial download — see coder/coder#9863. Non-root;
+    # assumes a Debian/Alpine bundle at /etc/ssl/certs/ca-certificates.crt.
+    init_container {
+      name              = "ca-trust"
+      image             = "${CODER_WORKSPACE_IMAGE}"
+      image_pull_policy = "IfNotPresent"
+      command = [
+        "sh", "-c",
+        "set -e; cp /etc/ssl/certs/ca-certificates.crt /trust/ca-certificates.crt; cat /cluster-ca/ca.crt >> /trust/ca-certificates.crt",
+      ]
+      security_context {
+        run_as_non_root            = true
+        run_as_user                = 1000
+        allow_privilege_escalation = false
+        read_only_root_filesystem  = true
+        capabilities {
+          drop = ["ALL"]
+        }
+      }
+      volume_mount {
+        name       = "cluster-ca"
+        mount_path = "/cluster-ca"
+        read_only  = true
+      }
+      volume_mount {
+        name       = "ca-trust"
+        mount_path = "/trust"
+      }
+    }
+
     container {
       name              = "dev"
       image             = "${CODER_WORKSPACE_IMAGE}"
@@ -141,6 +174,15 @@ resource "kubernetes_pod" "workspace" {
         name       = "home"
         mount_path = "/home/vscode"
       }
+
+      # Combined CA bundle from the initContainer so curl/git/apt and the Go agent
+      # all trust the private cluster CA (Traefik ${TALOS_CLUSTER_NAME}-ca-issuer).
+      volume_mount {
+        name       = "ca-trust"
+        mount_path = "/etc/ssl/certs/ca-certificates.crt"
+        sub_path   = "ca-certificates.crt"
+        read_only  = true
+      }
     }
 
     volume {
@@ -149,6 +191,21 @@ resource "kubernetes_pod" "workspace" {
         claim_name = kubernetes_persistent_volume_claim.home.metadata.0.name
         read_only  = false
       }
+    }
+
+    # Private cluster CA published into every namespace by trust-manager.
+    volume {
+      name = "cluster-ca"
+      config_map {
+        name         = "cluster-ca-bundle"
+        default_mode = "0444"
+      }
+    }
+
+    # Scratch space for the combined CA bundle assembled by the initContainer.
+    volume {
+      name = "ca-trust"
+      empty_dir {}
     }
   }
 }
