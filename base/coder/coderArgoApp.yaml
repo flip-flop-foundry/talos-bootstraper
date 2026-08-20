@@ -51,4 +51,4 @@ spec:
       path: _rendered/coder
       directory:
         recurse: false
-        include: "{coderSecretBootstrap.yaml}"
+        include: "{coderSecretBootstrap.yaml,coderOwnerBootstrapJob.yaml}"

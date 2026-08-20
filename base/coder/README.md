@@ -48,13 +48,18 @@ code and improve talos-bootstrapper without setting up a local toolchain.
    Coder starts even before this is set (GitHub login simply stays disabled),
    thanks to the `optional: true` secret references.
 
-2. **Break-glass owner.** Create the first Coder user:
+2. **Break-glass owner (automated).** The `coderOwnerBootstrapJob` PostSync hook
+   seeds the first Coder owner automatically once the control plane is healthy —
+   username `admin`, email `admin@${CODER_DOMAIN_NAME}`, with a randomly
+   generated password written back into the `coder-owner-bootstrap` secret.
+   Retrieve the password with:
    ```bash
-   kubectl -n ${CODER_NAMESPACE} exec deploy/coder -- \
-     coder server create-admin-user \
-       --email <email> --username <username> --password <password>
+   kubectl -n ${CODER_NAMESPACE} get secret coder-owner-bootstrap \
+     -o jsonpath='{.data.password}' | base64 -d; echo
    ```
-   (Intended values can be staged in the `coder-owner-bootstrap` secret shell.)
+   The Job is idempotent: it does nothing if an owner already exists, and reuses
+   any password already stored in the secret (so the stored value stays valid
+   after a database restore).
 
 3. **Template CI credentials.** For the "Push Coder Templates" Gitea Actions
    workflow to publish workspace templates, add two secrets to the cluster

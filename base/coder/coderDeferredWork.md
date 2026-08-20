@@ -57,13 +57,6 @@ deployment. Each item is safe to defer; none blocks a working deployment.
   a known-good release and verifying the CLI binary's published SHA256 (or vendor
   the CLI into a runner image) before running it in CI.
 
-
-## Automate setup of coder-owner-bootstrap
-
-- Use logic similar to the Longhorn credentials setup to seed the first Coder
-  owner from the `coder-owner-bootstrap` secret automatically, instead of the
-  current manual `coder server create-admin-user` step.
-
 ## Set hostUsers: false on Coder pods (user namespaces)
 
 We want Coder pods to run with `hostUsers: false` for user-namespace isolation
