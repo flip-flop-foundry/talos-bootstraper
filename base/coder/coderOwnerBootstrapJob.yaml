@@ -217,11 +217,22 @@ spec:
                 echo "ERROR: Coder owner login failed." >&2
                 exit 1
               fi
+              # Idempotency: a prior partial run may have left a token of this name.
+              # Its key is unreadable after creation, so delete it before re-minting
+              # (otherwise the mint below returns HTTP 409 and the Job can never recover).
+              stale_id="$(curl -sS -H "Coder-Session-Token: ${session_token}" \
+                "${SVC}/api/v2/users/me/keys/tokens" 2>/dev/null \
+                | jq -r '(.[]? // empty) | select(.token_name=="gitea-ci-templates") | .id' 2>/dev/null | head -n1 || true)"
+              if [ -n "${stale_id}" ]; then
+                echo "Removing stale Coder token gitea-ci-templates (${stale_id}) before re-minting."
+                curl -sS -o /dev/null -X DELETE -H "Coder-Session-Token: ${session_token}" \
+                  "${SVC}/api/v2/users/me/keys/${stale_id}" || true
+              fi
               key_resp="$(curl -sS -X POST -H "Coder-Session-Token: ${session_token}" \
                 -H 'Content-Type: application/json' \
                 -d '{"scope":"all","token_name":"gitea-ci-templates"}' \
                 "${SVC}/api/v2/users/me/keys/tokens" || true)"
-              coder_key="$(printf '%s' "${key_resp}" | jq -r '.key // empty')"
+              coder_key="$(printf '%s' "${key_resp}" | jq -r '.key // empty' 2>/dev/null || true)"
               if [ -z "${coder_key}" ]; then
                 echo "ERROR: failed to mint Coder API token: ${key_resp}" >&2
                 exit 1

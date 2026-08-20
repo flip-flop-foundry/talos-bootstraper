@@ -78,6 +78,12 @@ manual OAuth-app or token step.
    The Coder URL is rendered into the workflow from `${CODER_DOMAIN_NAME}`, so no
    `CODER_URL` secret is required.
 
+   Because Gitea only lets a repo/org **owner** write Actions secrets, the CI user
+   (`coder-ci`) is briefly made an org owner to publish the secret, then deleted
+   on the next bootstrap once `CODER_SESSION_TOKEN` is confirmed published. To
+   force a re-publish (e.g. the stored token was revoked), delete the
+   `CODER_SESSION_TOKEN` repo secret in Gitea and re-run **Apply Overlay**.
+
 ### Restarting after a secret change
 
 Reloader watches the referenced secrets, so updating `coder-oidc` (or the other
