@@ -18,7 +18,7 @@ metadata:
   name: coder
   namespace: ${CODER_NAMESPACE}
   annotations:
-    argocd.argoproj.io/sync-wave: "5"  # Deploy after the CNPG cluster (wave 1) has time to become ready
+    argocd.argoproj.io/sync-wave: "5"  # After cert-manager, the CNPG operator and Longhorn; DB ordering is handled by resource waves inside this app
 spec:
   project: cluster-services
   destination:
@@ -51,4 +51,4 @@ spec:
       path: _rendered/coder
       directory:
         recurse: false
-        include: "{coderSecretBootstrap.yaml,coderOwnerBootstrapJob.yaml}"
+        include: "{coderCnpgSecretBootstrap.yaml,coderCnpgCluster.yaml,coderSecretBootstrap.yaml,coderOwnerBootstrapJob.yaml}"

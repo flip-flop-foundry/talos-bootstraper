@@ -22,6 +22,10 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: coder-sql-server-cert
+  annotations:
+    # Negative waves keep the whole CNPG stack ahead of the Coder Helm chart
+    # (default wave 0) now that both live in a single Application.
+    argocd.argoproj.io/sync-wave: "-2"
 spec:
   secretName: coder-sql-server-cert
   usages:
@@ -54,6 +58,8 @@ apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
   name: coder-cnpg-selfsigned-issuer
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
 spec:
   selfSigned: {}
 ---
@@ -61,6 +67,8 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: coder-cnpg-client-ca
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
 spec:
   isCA: true
   commonName: coder-cnpg-client-ca
@@ -77,6 +85,8 @@ apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
   name: coder-cnpg-client-ca-issuer
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
 spec:
   ca:
     secretName: coder-cnpg-client-ca-key-pair
@@ -88,6 +98,8 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: coder-cnpg-client-cert
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
 spec:
   secretName: coder-cnpg-client-cert
   usages:
@@ -108,6 +120,8 @@ apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
   name: coder-cnpg-streaming-replica-cert
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
 spec:
   secretName: coder-cnpg-streaming-replica-cert
   usages:
@@ -127,7 +141,7 @@ kind: Cluster
 metadata:
   name: coder-sql
   annotations:
-    argocd.argoproj.io/sync-wave: "2"  # Deploy after certificates (wave 1)
+    argocd.argoproj.io/sync-wave: "-1"  # After the DB certs (wave -2); ArgoCD gates the Coder chart (wave 0) on this Cluster becoming Healthy
 spec:
   instances: 2
   imageName: ghcr.io/cloudnative-pg/postgresql:${CODER_PSQL_VERSION}
