@@ -110,3 +110,11 @@ Browse to `https://${CODER_DOMAIN_NAME}`. Workspaces are created from the
 - Workspace resource requests/limits (default 500m/1Gi request, 4 CPU/8Gi limit)
   are defined in the `k8s-dev-image` template and are tunable — lower them for
   small clusters if workspaces fail to schedule.
+- Each workspace home PVC is encrypted with its **own** LUKS key. The
+  `pvckey-2replica-notretained-backedup-ssd-wn` storage class resolves the key
+  from a `Secret` named after the PVC, and the `k8s-dev-image` Terraform template
+  provisions that key (`random_password` → `kubernetes_secret_v1`) as part of the
+  same workspace build, so it is created with the workspace and deleted with it.
+  The key persists across workspace stop/start (it has no `count`, matching the
+  PVC); only deleting the workspace removes both the volume (reclaim `Delete`) and
+  its key.

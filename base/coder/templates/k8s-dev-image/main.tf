@@ -15,6 +15,9 @@ terraform {
     kubernetes = {
       source = "hashicorp/kubernetes"
     }
+    random = {
+      source = "hashicorp/random"
+    }
   }
 }
 
@@ -37,7 +40,7 @@ data "coder_external_auth" "gitea" {
 
 locals {
   namespace     = "${CODER_WORKSPACES_NAMESPACE}"
-  workspace_name = lower("coder-${data.coder_workspace_owner.me.username}-${data.coder_workspace.me.name}")
+  workspace_name = lower("coder-${data.coder_workspace_owner.me.name}-${data.coder_workspace.me.name}")
 }
 
 resource "coder_agent" "main" {
@@ -73,20 +76,47 @@ resource "coder_agent" "main" {
   }
 }
 
-resource "kubernetes_persistent_volume_claim" "home" {
+# Per-PVC LUKS key for the pvckey-* Longhorn storage class, which resolves its
+# encryption secret from ${pvc.name}. Terraform owns the key so it lives and dies
+# with the workspace (not with start/stop) — no `count`, matching the PVC below.
+resource "random_password" "home_luks" {
+  length  = 43
+  special = false
+}
+
+resource "kubernetes_secret_v1" "home_luks" {
+  metadata {
+    # MUST equal the PVC name: the pvckey-* class looks up ${pvc.name} in ${pvc.namespace}.
+    name      = "${local.workspace_name}-home"
+    namespace = local.namespace
+    labels = {
+      "app.kubernetes.io/managed-by" = "coder"
+      "com.coder.workspace.name"     = data.coder_workspace.me.name
+      "com.coder.user.username"      = data.coder_workspace_owner.me.name
+    }
+  }
+  data = {
+    CRYPTO_KEY_VALUE = random_password.home_luks.result
+  }
+}
+
+resource "kubernetes_persistent_volume_claim_v1" "home" {
+  # Key must exist before Longhorn provisions the encrypted volume; on destroy
+  # Terraform tears the PVC down first (volume cleaned up while the key still exists).
+  depends_on = [kubernetes_secret_v1.home_luks]
   metadata {
     name      = "${local.workspace_name}-home"
     namespace = local.namespace
     labels = {
       "app.kubernetes.io/managed-by" = "coder"
       "com.coder.workspace.name"     = data.coder_workspace.me.name
-      "com.coder.user.username"      = data.coder_workspace_owner.me.username
+      "com.coder.user.username"      = data.coder_workspace_owner.me.name
     }
   }
   wait_until_bound = false
   spec {
     access_modes       = ["ReadWriteOnce"]
-    storage_class_name = "pvckey-2replica-retained-backedup-ssd-cp"
+    storage_class_name = "pvckey-2replica-notretained-backedup-ssd-wn"
     resources {
       requests = {
         storage = "${CODER_WORKSPACE_STORAGE_SIZE}"
@@ -95,7 +125,7 @@ resource "kubernetes_persistent_volume_claim" "home" {
   }
 }
 
-resource "kubernetes_pod" "workspace" {
+resource "kubernetes_pod_v1" "workspace" {
   count = data.coder_workspace.me.start_count
   metadata {
     name      = local.workspace_name
@@ -103,12 +133,12 @@ resource "kubernetes_pod" "workspace" {
     labels = {
       "app.kubernetes.io/managed-by" = "coder"
       "com.coder.workspace.name"     = data.coder_workspace.me.name
-      "com.coder.user.username"      = data.coder_workspace_owner.me.username
+      "com.coder.user.username"      = data.coder_workspace_owner.me.name
     }
   }
   spec {
     # NOTE: We want `hostUsers = false` here for user-namespace isolation, but the
-    # hashicorp/kubernetes provider's kubernetes_pod does not yet expose that field.
+    # hashicorp/kubernetes provider's kubernetes_pod_v1 does not yet expose that field.
     # Tracked in coderDeferredWork.md. See:
     #   https://github.com/hashicorp/terraform-provider-kubernetes/issues/2818
     #   https://github.com/hashicorp/terraform-provider-kubernetes/pull/2828
@@ -204,7 +234,7 @@ resource "kubernetes_pod" "workspace" {
     volume {
       name = "home"
       persistent_volume_claim {
-        claim_name = kubernetes_persistent_volume_claim.home.metadata.0.name
+        claim_name = kubernetes_persistent_volume_claim_v1.home.metadata.0.name
         read_only  = false
       }
     }
