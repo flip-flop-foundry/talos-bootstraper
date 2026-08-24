@@ -3,8 +3,8 @@
 # render-overlay.sh (prefixed with the component name) + push-to-gitea.sh.
 #
 # Required Gitea repo secrets (auto-provisioned; see base/coder/README.md):
-#   CODER_SESSION_TOKEN  a Coder API token, published automatically by the Coder
-#                        PostSync Job (coderOwnerBootstrapJob).
+#   CODER_SESSION_TOKEN  a Coder API token, published automatically by
+#                        gitea-bootstrap.sh (devenv side).
 #
 # NOTE ON RENDERING: render-overlay.sh runs envsubst with a whitelist that
 # contains ONLY the variables exported by the env file. Consequently:
@@ -51,7 +51,7 @@ jobs:
         run: |
           if [ -z "${{ secrets.CODER_SESSION_TOKEN }}" ]; then
             echo "ERROR: CODER_SESSION_TOKEN repo secret is not configured."
-            echo "       It is published automatically by the Coder PostSync Job;"
+            echo "       It is published automatically by gitea-bootstrap.sh;"
             echo "       see base/coder/README.md -> 'Template CI credentials'."
             exit 1
           fi
