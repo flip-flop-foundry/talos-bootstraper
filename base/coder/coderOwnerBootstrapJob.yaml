@@ -8,14 +8,13 @@
 #   2. skips if the first user already exists (GET /api/v2/users/first -> 200),
 #   3. otherwise creates the owner via the unauthenticated bootstrap endpoint
 #      POST /api/v2/users/first with a securely generated random password,
-#   4. persists email/username/password into the `coder-owner-bootstrap` secret,
-#   5. if gitea-bootstrap.sh requested one (ConfigMap `coder-session-token-request`),
-#      mints a Coder API token and writes it to the `coder-session-token-out` secret.
-#      gitea-bootstrap.sh — not this Job — publishes it to Gitea with its admin token,
-#      so no Gitea credential is ever staged into the coder namespace.
+#   4. persists email/username/password into the `coder-owner-bootstrap` secret.
 #
-# Idempotent: reruns on every sync. Owner creation only acts when no owner exists;
-# token minting only acts while a request marker is present and no outbox exists yet.
+# The CODER_SESSION_TOKEN for Gitea CI is minted separately by gitea-bootstrap.sh
+# (which execs the Coder pod and holds the Gitea admin token), so no Gitea
+# credential is ever staged into the coder namespace.
+#
+# Idempotent: reruns on every sync. Owner creation only acts when no owner exists.
 # If a password is already stored in the secret it is reused, so the stored value
 # stays valid even if the user is recreated.
 ###############################################################################
@@ -48,18 +47,6 @@ rules:
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["create"]
-  # Token-publish plumbing: read the request marker (ConfigMap) to know a token is
-  # wanted, and read the outbox Secret to avoid re-minting. The outbox is created
-  # via the broad "create" rule above; gitea-bootstrap.sh (not this Job) does the
-  # Gitea write and deletes both afterwards.
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    resourceNames: ["coder-session-token-request"]
-    verbs: ["get"]
-  - apiGroups: [""]
-    resources: ["secrets"]
-    resourceNames: ["coder-session-token-out"]
-    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -197,69 +184,7 @@ spec:
                 fi
                 echo "Stored owner credentials in secret ${NS}/${SECRET} (username=${USERNAME}, email=${EMAIL})."
               fi
-
-              # 6. Produce a Coder API token for CODER_SESSION_TOKEN, IF the
-              #    orchestrator (gitea-bootstrap.sh) requested one. This Job never
-              #    holds a Gitea credential — it writes the minted key to an outbox
-              #    secret and gitea-bootstrap.sh performs the Gitea write with its
-              #    admin token on this or a later apply.
-              if ! kubectl get configmap coder-session-token-request -n "${NS}" >/dev/null 2>&1; then
-                echo "No token-publish request; nothing to mint. Done."
-                exit 0
-              fi
-              if kubectl get secret coder-session-token-out -n "${NS}" >/dev/null 2>&1; then
-                echo "Outbox secret already present; awaiting orchestrator publish. Done."
-                exit 0
-              fi
-              echo "Publish requested; minting a Coder API token for the outbox."
-
-              # 6a. Need the owner password to mint a Coder token.
-              PASSWORD="$(kubectl get secret "${SECRET}" -n "${NS}" \
-                -o jsonpath='{.data.password}' 2>/dev/null | base64 -d 2>/dev/null || true)"
-              if [ -z "${PASSWORD}" ]; then
-                echo "ERROR: owner password not stored in ${NS}/${SECRET}; cannot mint Coder token." >&2
-                exit 1
-              fi
-
-              # 6b. Log in as the owner and mint a long-lived Coder API token.
-              login_resp="$(curl -sS -X POST -H 'Content-Type: application/json' \
-                -d "$(printf '{"email":"%s","password":"%s"}' "${EMAIL}" "${PASSWORD}")" \
-                "${SVC}/api/v2/users/login" || true)"
-              session_token="$(printf '%s' "${login_resp}" | jq -r '.session_token // empty')"
-              if [ -z "${session_token}" ]; then
-                echo "ERROR: Coder owner login failed." >&2
-                exit 1
-              fi
-              # Idempotency: a prior partial run may have left a token of this name.
-              # Its key is unreadable after creation, so delete it before re-minting
-              # (otherwise the mint below returns HTTP 409 and the Job can never recover).
-              stale_id="$(curl -sS -H "Coder-Session-Token: ${session_token}" \
-                "${SVC}/api/v2/users/me/keys/tokens" 2>/dev/null \
-                | jq -r '(.[]? // empty) | select(.token_name=="gitea-ci-templates") | .id' 2>/dev/null | head -n1 || true)"
-              if [ -n "${stale_id}" ]; then
-                echo "Removing stale Coder token gitea-ci-templates (${stale_id}) before re-minting."
-                curl -sS -o /dev/null -X DELETE -H "Coder-Session-Token: ${session_token}" \
-                  "${SVC}/api/v2/users/me/keys/${stale_id}" || true
-              fi
-              key_resp="$(curl -sS -X POST -H "Coder-Session-Token: ${session_token}" \
-                -H 'Content-Type: application/json' \
-                -d '{"scope":"all","token_name":"gitea-ci-templates"}' \
-                "${SVC}/api/v2/users/me/keys/tokens" || true)"
-              coder_key="$(printf '%s' "${key_resp}" | jq -r '.key // empty' 2>/dev/null || true)"
-              if [ -z "${coder_key}" ]; then
-                echo "ERROR: failed to mint Coder API token: ${key_resp}" >&2
-                exit 1
-              fi
-
-              # 6c. Hand the minted key to the orchestrator via the outbox secret.
-              #     gitea-bootstrap.sh reads it, PUTs CODER_SESSION_TOKEN with the
-              #     Gitea admin token, then deletes the outbox + request marker.
-              #     The top-of-step guard guarantees the outbox does not exist yet;
-              #     if a concurrent run raced us, create fails and the Job retries
-              #     (next run exits cleanly at the outbox-present guard).
-              kubectl create secret generic coder-session-token-out -n "${NS}" \
-                --type=Opaque --from-literal=key="${coder_key}"
-              echo "Wrote minted Coder token to ${NS}/coder-session-token-out for publishing."
+              echo "Owner bootstrap complete."
           resources:
             requests:
               cpu: 10m
