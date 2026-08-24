@@ -8,8 +8,10 @@
 #
 # NOTE ON RENDERING: render-overlay.sh runs envsubst with a whitelist that
 # contains ONLY the variables exported by the env file. Consequently:
-#   - ${CODER_IMAGE_TAG} and ${CODER_DOMAIN_NAME} ARE whitelisted, so they are
-#     substituted at render time (pinning the CLI version + Coder URL).
+#   - ${CODER_DOMAIN_NAME} IS whitelisted, so it is substituted at render time
+#     (pinning the Coder URL). The CLI version no longer needs pinning: the
+#     coder/setup-action downloads the binary straight from the deployment, so
+#     it always matches the running server.
 #   - ${{ secrets.* }} are NOT whitelisted, so they pass through verbatim for
 #     Gitea Actions to resolve at run time.
 #   - The shell loop variables use the ct_* prefix precisely because they are
@@ -56,16 +58,14 @@ jobs:
             exit 1
           fi
 
-      - name: Install Coder CLI
-        run: |
-          # Pin the CLI to the control-plane version to avoid drift and reduce
-          # supply-chain risk from installing whatever 'latest' happens to be.
-          curl -fsSL https://coder.com/install.sh | sh -s -- --version "${CODER_IMAGE_TAG}"
-          coder version
-
-      - name: Authenticate to Coder
-        run: |
-          coder login "https://${CODER_DOMAIN_NAME}" --token "${{ secrets.CODER_SESSION_TOKEN }}"
+      - name: Setup Coder CLI
+        # Pinned to the v1.1.0 release commit (not the tag) for supply-chain
+        # security. The action downloads the CLI directly from the deployment,
+        # so the binary always matches the server version and logs in for us.
+        uses: coder/setup-action@4a607a8113d4e676e2d7c34caa20a814bc88bfda # v1.1.0
+        with:
+          access_url: "https://${CODER_DOMAIN_NAME}"
+          coder_session_token: ${{ secrets.CODER_SESSION_TOKEN }}
 
       - name: Push templates
         run: |
